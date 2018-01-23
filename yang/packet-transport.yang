@@ -1,0 +1,160 @@
+module packet-transport {
+    yang-version 1;
+    namespace "http://example.com";
+    prefix "pkt-transport";
+
+    import openconfig-terminal-device { prefix oc-opt-term; }
+    import openconfig-platform-port { prefix oc-port; }
+    import openconfig-platform { prefix oc-platform; }
+    import openconfig-interfaces { prefix oc-if; }
+
+    grouping port-config {
+        leaf name {
+            type string;
+        }
+    }
+
+    grouping port-state {
+    }
+
+    grouping optical-module-connection-config {
+
+        container optical-module {
+            leaf name {
+                description
+                    "name of the optical module to connect this port";
+                type string;
+            }
+            leaf channel {
+                description
+                    "channel of the optical module to connect this port";
+                type string;
+            }
+        }
+
+        leaf id {
+            description
+                "id for traffic aggregated on single optical module.
+                Current implementation uses VLAN for traffic aggregation.
+                This id is directly used as VLAN ID.
+                client interfaces act as an access port, line interfaces act as an trunk port.";
+            type uint32;
+        }
+    }
+
+    grouping optical-module-connection-top {
+        container optical-module-connection {
+            container config {
+                uses optical-module-connection-config;
+            }
+            container state {
+                config false;
+                uses optical-module-connection-config;
+            }
+        }
+    }
+
+    grouping optical-module-config {
+        leaf name {
+            type string;
+        }
+    }
+
+    grouping optical-module-state {
+    }
+
+    container packet-transponder {
+
+        container ports {
+            list port {
+                key "name";
+
+                description "port represents ethernet front panel ports of packet-transponder.
+                    This doesn't include optical module ports.
+                    We can configure breakout and speed configuration here.";
+
+                leaf name {
+                    type leafref {
+                        path "../config/name";
+                    }
+                }
+
+                container config {
+                    uses port-config;
+                }
+
+                container state {
+                    config false;
+                    uses port-config;
+                    uses port-state;
+                    uses oc-platform:platform-component-temp-state;
+                }
+
+                uses oc-port:port-breakout-top;
+            }
+        }
+
+        container interfaces {
+            list interface {
+                key "name";
+
+                description "interface represents ethernet interfaces.
+                    when a port is configured to break out into 4, 4 interfaces will be created.
+                    We can configure the connection between interface and optical module here";
+
+                leaf name {
+                    type leafref {
+                        path "../config/name";
+                    }
+                }
+
+                container config {
+                    uses oc-if:interface-phys-config;
+                }
+
+                container state {
+                    uses oc-if:interface-phys-config;
+                    uses oc-if:interface-common-state;
+                    uses oc-if:interface-counters-state;
+                }
+
+                uses optical-module-connection-top;
+
+            }
+        }
+
+        container optical-modules {
+            list optical-module {
+                key "name";
+
+                leaf name {
+                    type leafref {
+                        path "../config/name";
+                    }
+                }
+
+                container config {
+                    uses optical-module-config;
+                }
+
+                container state {
+                    config false;
+                    uses optical-module-config;
+                    uses optical-module-state;
+                }
+
+                uses oc-opt-term:terminal-operational-mode-top;
+                uses oc-opt-term:terminal-optical-channel-top;
+            }
+        }
+    }
+
+    deviation "/pkt-transport:packet-transponder/pkt-transport:ports/pkt-transport:port/" +
+        "pkt-transport:breakout-mode/pkt-transport:config/pkt-transport:num-channels" {
+            deviate replace {
+                type uint8 {
+                    range "1|4";
+                }
+            }
+    }
+}
