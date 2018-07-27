@@ -1,0 +1,61 @@
+{
+   "openconfig-interfaces:interfaces": {
+      "interface": [
+         {
+            "config": {
+               "description": "Link to rtr01.pop44",
+               "name": "eth0",
+               "type": "iana-if-type:ethernetCsmacd"
+            },
+            "name": "eth0"
+         }
+      ]
+   },
+   "openconfig-network-instance:network-instances": {
+      "network-instance": [
+         {
+            "config": {
+               "name": "DEFAULT"
+            },
+            "name": "DEFAULT",
+            "protocols": {
+               "protocol": [
+                  {
+                     "bgp": {
+                        "global": {
+                           "config": {
+                              "as": 15169
+                           }
+                        }
+                     },
+                     "config": {
+                        "identifier": "openconfig-policy-types:BGP",
+                        "name": "15169"
+                     },
+                     "identifier": "openconfig-policy-types:BGP",
+                     "name": "15169"
+                  }
+               ]
+            }
+         }
+      ]
+   },
+   "openconfig-platform:components": {
+      "component": [
+         {
+            "config": {
+               "name": "os"
+            },
+            "name": "os",
+            "state": {
+               "type": "openconfig-platform-types:OPERATING_SYSTEM"
+            }
+         }
+      ]
+   },
+   "openconfig-system:system": {
+      "config": {
+         "hostname": "rtr02.pop44"
+      }
+   }
+}

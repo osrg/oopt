@@ -5,11 +5,59 @@ module packet-transport {
 
     import openconfig-terminal-device { prefix oc-opt-term; }
     import openconfig-platform-port { prefix oc-port; }
-    import openconfig-platform { prefix oc-platform; }
     import openconfig-interfaces { prefix oc-if; }
+    import org-openroadm-common-types {
+      prefix org-openroadm-common-types;
+      revision-date 2017-12-15;
+    }
+
+    typedef frequency-grid-type {
+        type enumeration {
+            enum GRID_100GHZ {
+            }
+            enum GRID_50GHZ {
+            }
+            enum GRID_33GHZ {
+            }
+            enum GRID_25GHZ {
+            }
+        }
+    }
+
+    typedef optical-module-status-type {
+        type enumeration {
+            enum STATE_DOWN {
+            }
+            enum STATE_BOOTING_TOP_HALF {
+            }
+            enum STATE_WAITING_RX_SIGNAL {
+            }
+            enum STATE_BOOTING_BOTTOM_HALF {
+            }
+            enum STATE_TESTING {
+            }
+            enum STATE_READY {
+            }
+            enum STATE_RESETTING {
+            }
+        }
+    }
+
+    typedef optical-modulation-type {
+        type enumeration {
+            enum DP_QPSK {
+            }
+            enum DP_16QAM {
+            }
+        }
+    }
 
     grouping port-config {
         leaf name {
+            type string;
+        }
+
+        leaf description {
             type string;
         }
     }
@@ -17,20 +65,20 @@ module packet-transport {
     grouping port-state {
     }
 
-    grouping optical-module-connection-config {
-
-        container optical-module {
-            leaf name {
-                description
-                    "name of the optical module to connect this port";
-                type string;
-            }
-            leaf channel {
-                description
-                    "channel of the optical module to connect this port";
-                type string;
-            }
+    grouping optical-module-module-config {
+        leaf name {
+            description
+                "name of the optical module to connect this port";
+            type string;
         }
+        leaf channel {
+            description
+                "channel of the optical module to connect this port";
+            type string;
+        }
+    }
+
+    grouping optical-module-connection-config {
 
         leaf id {
             description
@@ -44,9 +92,21 @@ module packet-transport {
 
     grouping optical-module-connection-top {
         container optical-module-connection {
+
+            container optical-module {
+                container config {
+                    uses optical-module-module-config;
+                }
+                container state {
+                    uses optical-module-module-config;
+                    config false;
+                }
+            }
+
             container config {
                 uses optical-module-connection-config;
             }
+
             container state {
                 config false;
                 uses optical-module-connection-config;
@@ -54,13 +114,119 @@ module packet-transport {
         }
     }
 
+    grouping och-attributes {
+      description
+        "Optical Channel attributes";
+      leaf rate {
+        type identityref {
+          base org-openroadm-common-types:och-rate-identity;
+        }
+        description
+          "rate";
+      }
+      leaf frequency {
+        type org-openroadm-common-types:frequency-THz;
+        config true;
+        description
+          "Center Frequency in THz.";
+      }
+      leaf width {
+        type org-openroadm-common-types:frequency-GHz;
+        config false;
+        description
+          "Frequency width in GHz.";
+      }
+      leaf modulation-format {
+        type org-openroadm-common-types:modulation-format;
+      }
+      leaf transmit-power {
+        type org-openroadm-common-types:power-dBm;
+        description
+          "The target transmit power for this channel. When set, the xponder will work to ensure that port-current-power reaches this level. Applicable only to channel on top of xpdr-network port";
+      }
+    }
+
+    grouping optical-module-frequency-config {
+        leaf grid {
+            type frequency-grid-type;
+        }
+        leaf channel {
+            type uint8;
+        }
+    }
+
     grouping optical-module-config {
         leaf name {
             type string;
         }
+
+        leaf description {
+            type string;
+        }
+
+        leaf modulation-type {
+            type optical-modulation-type;
+        }
+
+        leaf ber-interval {
+            type uint32;
+        }
+
+        leaf prbs {
+            type boolean;
+        }
+
+        leaf losi {
+            type boolean;
+        }
+    }
+
+    grouping optical-module-state-rms {
+        leaf xi {
+            type uint16;
+        }
+        leaf xq {
+            type uint16;
+        }
+        leaf yi {
+            type uint16;
+        }
+        leaf yq {
+            type uint16;
+        }
+
     }
 
     grouping optical-module-state {
+
+        leaf sync-error {
+            type boolean;
+        }
+
+        leaf operation-status {
+            type optical-module-status-type;
+        }
+
+        list channel-stats {
+            key "name";
+
+            leaf name {
+                type string;
+            }
+
+            leaf sd-fec-ber {
+                type string;
+            }
+
+            leaf hd-fec-ber {
+                type string;
+            }
+
+            leaf post-fec-ber {
+                type string;
+            }
+        }
+
     }
 
     container packet-transponder {
@@ -87,7 +253,6 @@ module packet-transport {
                     config false;
                     uses port-config;
                     uses port-state;
-                    uses oc-platform:platform-component-temp-state;
                 }
 
                 uses oc-port:port-breakout-top;
@@ -133,6 +298,23 @@ module packet-transport {
                     }
                 }
 
+                container optical-module-frequency {
+                    container config {
+                        uses optical-module-frequency-config;
+                    }
+                    container state {
+                        config false;
+                        uses optical-module-frequency-config;
+                    }
+                }
+
+                container optical-module-rms {
+                    container state {
+                        config false;
+                        uses optical-module-state-rms;
+                    }
+                }
+
                 container config {
                     uses optical-module-config;
                 }
@@ -143,8 +325,6 @@ module packet-transport {
                     uses optical-module-state;
                 }
 
-                uses oc-opt-term:terminal-operational-mode-top;
-                uses oc-opt-term:terminal-optical-channel-top;
             }
         }
     }
