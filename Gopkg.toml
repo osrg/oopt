@@ -22,14 +22,6 @@
 
 
 [[constraint]]
-  branch = "master"
-  name = "github.com/openconfig/goyang"
-
-[[constraint]]
-  name = "github.com/d4l3k/messagediff"
-  branch = "master"
-
-[[constraint]]
   name = "github.com/spf13/cobra"
   branch = "dev"
   source = "https://github.com/ishidawataru/cobra.git"

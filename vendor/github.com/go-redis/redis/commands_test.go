@@ -115,6 +115,12 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(""))
 		})
 
+		It("should ClientKillByFilter", func() {
+			r := client.ClientKillByFilter("TYPE", "test")
+			Expect(r.Err()).To(MatchError("ERR Unknown client type 'test'"))
+			Expect(r.Val()).To(Equal(int64(0)))
+		})
+
 		It("should ClientPause", func() {
 			err := client.ClientPause(time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -219,7 +225,7 @@ var _ = Describe("Commands", func() {
 		It("Should Command", func() {
 			cmds, err := client.Command().Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 180, 10))
+			Expect(len(cmds)).To(BeNumerically("~", 200, 20))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
@@ -244,14 +250,31 @@ var _ = Describe("Commands", func() {
 	Describe("debugging", func() {
 
 		It("should DebugObject", func() {
-			debug := client.DebugObject("foo")
-			Expect(debug.Err()).To(HaveOccurred())
-			Expect(debug.Err().Error()).To(Equal("ERR no such key"))
+			err := client.DebugObject("foo").Err()
+			Expect(err).To(MatchError("ERR no such key"))
 
-			client.Set("foo", "bar", 0)
-			debug = client.DebugObject("foo")
-			Expect(debug.Err()).NotTo(HaveOccurred())
-			Expect(debug.Val()).To(ContainSubstring(`serializedlength:4`))
+			err = client.Set("foo", "bar", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			s, err := client.DebugObject("foo").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(ContainSubstring("serializedlength:4"))
+		})
+
+		It("should MemoryUsage", func() {
+			err := client.MemoryUsage("foo").Err()
+			Expect(err).To(Equal(redis.Nil))
+
+			err = client.Set("foo", "bar", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := client.MemoryUsage("foo").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(52)))
+
+			n, err = client.MemoryUsage("foo", 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(52)))
 		})
 
 	})
@@ -3016,6 +3039,199 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
+	})
+
+	Describe("streams", func() {
+		createStream := func() {
+			id, err := client.XAdd("stream", "1-0", map[string]interface{}{
+				"uno": "un",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("1-0"))
+
+			id, err = client.XAdd("stream", "2-0", map[string]interface{}{
+				"dos": "deux",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("2-0"))
+
+			id, err = client.XAdd("stream", "3-0", map[string]interface{}{
+				"tres": "troix",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("3-0"))
+		}
+
+		It("should XAdd", func() {
+			createStream()
+
+			id, err := client.XAdd("stream", "*", map[string]interface{}{
+				"quatro": "quatre",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			vals, err := client.XRange("stream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]*redis.XMessage{
+				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: id, Values: map[string]interface{}{"quatro": "quatre"}},
+			}))
+		})
+
+		It("should XAddExt", func() {
+			createStream()
+
+			id, err := client.XAddExt(&redis.XAddExt{
+				Stream: "stream",
+				MaxLen: 1,
+				Values: map[string]interface{}{"quatro": "quatre"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			vals, err := client.XRange("stream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]*redis.XMessage{
+				{ID: id, Values: map[string]interface{}{"quatro": "quatre"}},
+			}))
+		})
+
+		It("should XLen", func() {
+			createStream()
+
+			n, err := client.XLen("stream").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XRange", func() {
+			createStream()
+
+			msgs, err := client.XRange("stream", "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+			}))
+
+			msgs, err = client.XRange("stream", "2", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+			}))
+
+			msgs, err = client.XRange("stream", "-", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+			}))
+		})
+
+		It("should XRangeN", func() {
+			createStream()
+
+			msgs, err := client.XRangeN("stream", "-", "+", 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+			}))
+
+			msgs, err = client.XRangeN("stream", "2", "+", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+			}))
+
+			msgs, err = client.XRangeN("stream", "-", "2", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+			}))
+		})
+
+		It("should XRevRange", func() {
+			createStream()
+
+			msgs, err := client.XRevRange("stream", "+", "-").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+			}))
+
+			msgs, err = client.XRevRange("stream", "+", "2").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+			}))
+		})
+
+		It("should XRevRangeN", func() {
+			createStream()
+
+			msgs, err := client.XRevRangeN("stream", "+", "-", 2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+			}))
+
+			msgs, err = client.XRevRangeN("stream", "+", "2", 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgs).To(Equal([]*redis.XMessage{
+				{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+			}))
+		})
+
+		It("should XRead", func() {
+			createStream()
+
+			res, err := client.XRead("stream", "0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]*redis.XStream{{
+				Stream: "stream",
+				Messages: []*redis.XMessage{
+					{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+					{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+					{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				}},
+			}))
+
+			_, err = client.XRead("stream", "3").Result()
+			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should XReadExt", func() {
+			createStream()
+
+			res, err := client.XReadExt(&redis.XReadExt{
+				Streams: []string{"stream", "0"},
+				Count:   2,
+				Block:   100 * time.Millisecond,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]*redis.XStream{{
+				Stream: "stream",
+				Messages: []*redis.XMessage{
+					{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+					{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+				}},
+			}))
+
+			_, err = client.XReadExt(&redis.XReadExt{
+				Streams: []string{"stream", "3"},
+				Count:   1,
+				Block:   100 * time.Millisecond,
+			}).Result()
+			Expect(err).To(Equal(redis.Nil))
+		})
 	})
 
 	Describe("Geo add and radius search", func() {

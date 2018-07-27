@@ -60,29 +60,30 @@ func (c *baseClient) newConn() (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) getConn() (*pool.Conn, bool, error) {
-	cn, isNew, err := c.connPool.Get()
+func (c *baseClient) getConn() (*pool.Conn, error) {
+	cn, err := c.connPool.Get()
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	if !cn.Inited {
-		if err := c.initConn(cn); err != nil {
-			_ = c.connPool.Remove(cn)
-			return nil, false, err
+		err := c.initConn(cn)
+		if err != nil {
+			c.connPool.Remove(cn)
+			return nil, err
 		}
 	}
 
-	return cn, isNew, nil
+	return cn, nil
 }
 
 func (c *baseClient) releaseConn(cn *pool.Conn, err error) bool {
 	if internal.IsBadConn(err, false) {
-		_ = c.connPool.Remove(cn)
+		c.connPool.Remove(cn)
 		return false
 	}
 
-	_ = c.connPool.Put(cn)
+	c.connPool.Put(cn)
 	return true
 }
 
@@ -137,7 +138,7 @@ func (c *baseClient) defaultProcess(cmd Cmder) error {
 			time.Sleep(c.retryBackoff(attempt))
 		}
 
-		cn, _, err := c.getConn()
+		cn, err := c.getConn()
 		if err != nil {
 			cmd.setErr(err)
 			if internal.IsRetryableError(err, true) {
@@ -175,9 +176,8 @@ func (c *baseClient) retryBackoff(attempt int) time.Duration {
 
 func (c *baseClient) cmdTimeout(cmd Cmder) time.Duration {
 	if timeout := cmd.readTimeout(); timeout != nil {
-		return *timeout
+		return readTimeout(*timeout)
 	}
-
 	return c.opt.ReadTimeout
 }
 
@@ -225,7 +225,7 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 			time.Sleep(c.retryBackoff(attempt))
 		}
 
-		cn, _, err := c.getConn()
+		cn, err := c.getConn()
 		if err != nil {
 			setCmdsErr(cmds, err)
 			return err
@@ -234,10 +234,10 @@ func (c *baseClient) generalProcessPipeline(cmds []Cmder, p pipelineProcessor) e
 		canRetry, err := p(cn, cmds)
 
 		if err == nil || internal.IsRedisError(err) {
-			_ = c.connPool.Put(cn)
+			c.connPool.Put(cn)
 			break
 		}
-		_ = c.connPool.Remove(cn)
+		c.connPool.Remove(cn)
 
 		if !canRetry || !internal.IsRetryableError(err, true) {
 			break
@@ -423,7 +423,7 @@ func (c *Client) TxPipeline() Pipeliner {
 }
 
 func (c *Client) pubSub() *PubSub {
-	return &PubSub{
+	pubsub := &PubSub{
 		opt: c.opt,
 
 		newConn: func(channels []string) (*pool.Conn, error) {
@@ -431,6 +431,8 @@ func (c *Client) pubSub() *PubSub {
 		},
 		closeConn: c.connPool.CloseConn,
 	}
+	pubsub.init()
+	return pubsub
 }
 
 // Subscribe subscribes the client to the specified channels.
