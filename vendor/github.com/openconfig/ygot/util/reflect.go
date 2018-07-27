@@ -15,6 +15,7 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -151,7 +152,13 @@ func IsValueScalar(v reflect.Value) bool {
 	return !IsValueStruct(v) && !IsValueMap(v) && !IsValueSlice(v)
 }
 
-// IsInterfaceToStructPtr reports whether v is an interface that contains a
+// ValuesAreSameType returns true if v1 and v2 has the same reflect.Type,
+// otherwise it returns false.
+func ValuesAreSameType(v1 reflect.Value, v2 reflect.Value) bool {
+	return v1.Type() == v2.Type()
+}
+
+// IsValueInterfaceToStructPtr reports whether v is an interface that contains a
 // pointer to a struct.
 func IsValueInterfaceToStructPtr(v reflect.Value) bool {
 	return IsValueInterface(v) && IsValueStructPtr(v.Elem())
@@ -223,6 +230,7 @@ func UpdateField(parentStruct interface{}, fieldName string, fieldValue interfac
 	if ft.Type.Kind() == reflect.Slice {
 		return InsertIntoSliceStructField(parentStruct, fieldName, fieldValue)
 	}
+
 	return InsertIntoStruct(parentStruct, fieldName, fieldValue)
 }
 
@@ -242,6 +250,14 @@ func InsertIntoStruct(parentStruct interface{}, fieldName string, fieldValue int
 	ft, ok := pt.Elem().FieldByName(fieldName)
 	if !ok {
 		return fmt.Errorf("parent type %T does not have a field name %s", parentStruct, fieldName)
+	}
+
+	// YANG empty fields are represented as a derived bool value defined in the
+	// generated code. Here we cast the value to the type in the generated code.
+	if ft.Type.Kind() == reflect.Bool && t.Kind() == reflect.Bool {
+		nv := reflect.New(ft.Type).Elem()
+		nv.SetBool(v.Bool())
+		v = nv
 	}
 
 	n := v
@@ -347,6 +363,39 @@ func InsertIntoMapStructField(parentStruct interface{}, fieldName string, key, f
 	return nil
 }
 
+// InitializeStructField initializes the given field in the given struct. Only
+// pointer fields and some of the composite types are initialized(Map).
+// It initializes to zero value of the underlying type if the field is a pointer.
+// If the field is a slice, no need to initialize as appending a new element
+// will do the same thing. Note that if the field is initialized already, this
+// function doesn't re-initialize it.
+func InitializeStructField(parent interface{}, fieldName string) error {
+	if parent == nil {
+		return errors.New("parent is nil")
+	}
+	pV := reflect.ValueOf(parent)
+	if IsValuePtr(pV) {
+		pV = pV.Elem()
+	}
+
+	if !IsValueStruct(pV) {
+		return fmt.Errorf("%T is not a struct kind", parent)
+	}
+
+	fV := pV.FieldByName(fieldName)
+	if !fV.IsValid() {
+		return fmt.Errorf("invalid %T %v field value", parent, fieldName)
+	}
+	switch {
+	case IsValuePtr(fV) && fV.IsNil():
+		fV.Set(reflect.New(fV.Type().Elem()))
+	case IsValueMap(fV) && fV.IsNil():
+		fV.Set(reflect.MakeMap(fV.Type()))
+	}
+
+	return nil
+}
+
 // isFieldTypeCompatible reports whether f.Set(v) can be called successfully on
 // a struct field f corresponding to ft. It is assumed that f is exported and
 // addressable.
@@ -357,9 +406,11 @@ func isFieldTypeCompatible(ft reflect.StructField, v reflect.Value) bool {
 		}
 		return v.Type() == ft.Type
 	}
+
 	if !v.IsValid() {
 		return false
 	}
+
 	return v.Type() == ft.Type
 }
 
@@ -407,6 +458,9 @@ type NodeInfo struct {
 	// FieldKey is the key of the map element being traversed. ValueOf(nil) if
 	// type being traversed is not a map.
 	FieldKey reflect.Value
+	// Annotation is a field that can be populated by an iterFunction such that
+	// context can be carried with a node throughout the iteration.
+	Annotation []interface{}
 }
 
 // FieldIteratorFunc is an iteration function for arbitrary field traversals.
@@ -419,13 +473,15 @@ type FieldIteratorFunc func(ni *NodeInfo, in, out interface{}) Errors
 // any Go type) and executes iterFunction on each field. Any nil fields
 // (including value) are traversed in the schema tree only. This is done to
 // support iterations that need to detect the absence of some data item e.g.
-// leafref.
+// leafref. Fields that are present in value that are explicitly noted not to
+// have a corresponding schema (e.g., annotation/metadata fields added by ygen)
+// are skipped during traversal.
 //   schema is the schema corresponding to value.
 //   in, out are passed to the iterator function and can be used to carry state
 //     and return results from the iterator.
 //   iterFunction is executed on each scalar field.
 // It returns a slice of errors encountered while processing the struct.
-func ForEachField(schema *yang.Entry, value interface{}, in, out interface{}, iterFunction FieldIteratorFunc) (errs Errors) {
+func ForEachField(schema *yang.Entry, value interface{}, in, out interface{}, iterFunction FieldIteratorFunc) Errors {
 	if IsValueNil(value) {
 		return nil
 	}
@@ -433,14 +489,23 @@ func ForEachField(schema *yang.Entry, value interface{}, in, out interface{}, it
 }
 
 // forEachFieldInternal recursively iterates through the fields of value (which
-// may be any Go type) and executes iterFunction on each field.
+// may be any Go type) and executes iterFunction on each field that is present
+// within the supplied schema. Fields that are explicitly noted not to have
+// a schema (e.g., annotation fields) are skipped.
 //   in, out are passed through from the caller to the iteration and can be used
 //     arbitrarily in the iteration function to carry state and results.
-func forEachFieldInternal(ni *NodeInfo, in, out interface{}, iterFunction FieldIteratorFunc) (errs Errors) {
+func forEachFieldInternal(ni *NodeInfo, in, out interface{}, iterFunction FieldIteratorFunc) Errors {
 	if IsValueNil(ni) {
 		return nil
 	}
 
+	// If the field is an annotation, then we do not process it any further, including
+	// skipping running the iterFunction.
+	if IsYgotAnnotation(ni.StructField) {
+		return nil
+	}
+
+	var errs Errors
 	errs = AppendErrs(errs, iterFunction(ni, in, out))
 
 	v := ni.FieldValue
@@ -456,6 +521,12 @@ func forEachFieldInternal(ni *NodeInfo, in, out interface{}, iterFunction FieldI
 	case IsTypeStruct(t):
 		for i := 0; i < t.NumField(); i++ {
 			sf := t.Field(i)
+
+			// Do not handle annotation fields, since they have no schema.
+			if IsYgotAnnotation(sf) {
+				continue
+			}
+
 			nn := &NodeInfo{
 				Parent:      ni,
 				StructField: sf,
@@ -545,6 +616,115 @@ func forEachFieldInternal(ni *NodeInfo, in, out interface{}, iterFunction FieldI
 	return errs
 }
 
+// ForEachDataField iterates the value supplied and calls the iterFunction for
+// each data tree node found in the supplied value. No schema information is required
+// to perform the iteration. The in and out arguments are passed to the iterFunction
+// without inspection by this function, and can be used by the caller to store
+// input and output during the iteration through the data tree.
+func ForEachDataField(value, in, out interface{}, iterFunction FieldIteratorFunc) Errors {
+	if IsValueNil(value) {
+		return nil
+	}
+
+	return forEachDataFieldInternal(&NodeInfo{FieldValue: reflect.ValueOf(value)}, in, out, iterFunction)
+}
+
+func forEachDataFieldInternal(ni *NodeInfo, in, out interface{}, iterFunction FieldIteratorFunc) Errors {
+	if IsValueNil(ni) {
+		return nil
+	}
+
+	if IsNilOrInvalidValue(ni.FieldValue) {
+		// Skip any fields that are nil within the data tree, since we
+		// do not need to iterate on them.
+		return nil
+	}
+
+	var errs Errors
+	// Run the iterator function for this field.
+	errs = AppendErrs(errs, iterFunction(ni, in, out))
+
+	v := ni.FieldValue
+	t := v.Type()
+
+	// Determine whether we need to recurse into the field, or whether it is
+	// a leaf or leaf-list, which are not recursed into when traversing the
+	// data tree.
+	switch {
+	case IsTypeStructPtr(t):
+		// A struct pointer in a GoStruct is a pointer to another container within
+		// the YANG, therefore we dereference the pointer and then recurse. If the
+		// pointer is nil, then we do not need to do this since the data tree branch
+		// is unset in the schema.
+		t = t.Elem()
+		v = v.Elem()
+		fallthrough
+	case IsTypeStruct(t):
+		// Handle non-pointer structs by recursing into each field of the struct.
+		for i := 0; i < t.NumField(); i++ {
+			sf := t.Field(i)
+			nn := &NodeInfo{
+				Parent:      ni,
+				StructField: sf,
+				FieldValue:  reflect.Zero(sf.Type),
+			}
+
+			nn.FieldValue = v.Field(i)
+			ps, err := SchemaPaths(nn.StructField)
+			if err != nil {
+				return NewErrs(err)
+			}
+			// In the case that the field expands to >1 different data tree path,
+			// i.e., SchemaPaths above returns more than one path, then we recurse
+			// for each schema path. This ensures that the iterator
+			// function runs for all expansions of the data tree as well as the GoStruct
+			// fields.
+			for _, p := range ps {
+				nn.PathFromParent = p
+				if IsTypeSlice(sf.Type) || IsTypeMap(sf.Type) {
+					// Since lists can have path compression - where the path contains more
+					// than one element, ensure that the schema path we received is only two
+					// elements long. This protects against compression errors where there are
+					// trailing spaces (e.g., a path tag of config/bar/).
+					nn.PathFromParent = p[0:1]
+				}
+				errs = AppendErrs(errs, forEachDataFieldInternal(nn, in, out, iterFunction))
+			}
+		}
+	case IsTypeSlice(t):
+		// Only iterate in the data tree if the slice is of structs, otherwise
+		// for leaf-lists we only run once.
+		if !IsTypeStructPtr(t.Elem()) && !IsTypeStruct(t.Elem()) {
+			return errs
+		}
+
+		for i := 0; i < ni.FieldValue.Len(); i++ {
+			nn := *ni
+			nn.Parent = ni
+			// The name of the list is the same in each of the entries within the
+			// list therefore, we do not need to set the path to be different from
+			// the parent.
+			nn.PathFromParent = ni.PathFromParent
+			nn.FieldValue = ni.FieldValue.Index(i)
+			errs = AppendErrs(errs, forEachDataFieldInternal(&nn, in, out, iterFunction))
+		}
+	case IsTypeMap(t):
+		// Handle the case of a keyed map, which is a YANG list.
+		if IsNilOrInvalidValue(v) {
+			return errs
+		}
+		for _, key := range ni.FieldValue.MapKeys() {
+			nn := *ni
+			nn.Parent = ni
+			nn.FieldValue = ni.FieldValue.MapIndex(key)
+			nn.FieldKey = key
+			nn.FieldKeys = ni.FieldValue.MapKeys()
+			errs = AppendErrs(errs, forEachDataFieldInternal(&nn, in, out, iterFunction))
+		}
+	}
+	return errs
+}
+
 // GetNodes returns the nodes in the data tree at the indicated path, relative
 // to the supplied root and their corresponding schemas at the same slice index.
 // schema is the schema for root.
@@ -612,6 +792,12 @@ func getNodesContainer(schema *yang.Entry, root interface{}, path *gpb.Path) ([]
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Field(i)
 		ft := v.Type().Field(i)
+
+		// Skip annotation fields, since they do not have a schema.
+		if IsYgotAnnotation(ft) {
+			continue
+		}
+
 		cschema, err := FieldSchema(schema, ft)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error for schema for type %T, field name %s: %s", root, ft.Name, err)
@@ -626,14 +812,14 @@ func getNodesContainer(schema *yang.Entry, root interface{}, path *gpb.Path) ([]
 			return nil, nil, err
 		}
 		for _, p := range ps {
-			if pathMatchesPrefix(path, p) {
+			if PathMatchesPrefix(path, p) {
 				// don't trim whole prefix  for keyed list since name and key
 				// are a in the same element.
 				to := len(p)
 				if IsTypeMap(ft.Type) {
 					to--
 				}
-				return getNodesInternal(cschema, f.Interface(), trimGNMIPathPrefix(path, p[0:to]))
+				return getNodesInternal(cschema, f.Interface(), TrimGNMIPathPrefix(path, p[0:to]))
 			}
 		}
 	}
@@ -722,7 +908,7 @@ func getNodesList(schema *yang.Entry, root interface{}, path *gpb.Path) ([]inter
 			// Pass in the list schema, but the actual selected element
 			// rather than the whole list.
 			DbgPrint("key matches")
-			n, s, err := getNodesInternal(schema, ev.Interface(), popGNMIPath(path))
+			n, s, err := getNodesInternal(schema, ev.Interface(), PopGNMIPath(path))
 			if err != nil {
 				return nil, nil, err
 			}
@@ -744,7 +930,7 @@ func getNodesList(schema *yang.Entry, root interface{}, path *gpb.Path) ([]inter
 func pathStructTagKey(f reflect.StructField) string {
 	p, err := pathToSchema(f)
 	if err != nil {
-		log.Errorln("struct field %s does not have a path tag, bad schema?", f.Name)
+		log.Errorf("struct field %s does not have a path tag, bad schema?", f.Name)
 		return ""
 	}
 	return p[len(p)-1]

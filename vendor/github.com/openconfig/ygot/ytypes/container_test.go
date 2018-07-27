@@ -37,6 +37,7 @@ type ContainerStruct struct {
 	Leaf1Name   *string `path:"config/leaf1|leaf1"`
 	Leaf2Name   *string `path:"leaf2"`
 	BadLeafName *string `path:"bad-leaf"`
+	Annotation  *string `path:"@annotation" ygotAnnotation:"true"`
 }
 
 func (c *ContainerStruct) IsYANGGoStruct() {}
@@ -249,6 +250,7 @@ func TestUnmarshalContainer(t *testing.T) {
 		desc    string
 		schema  *yang.Entry
 		json    string
+		opts    []UnmarshalOpt
 		want    interface{}
 		wantErr string
 	}{
@@ -282,6 +284,13 @@ func TestUnmarshalContainer(t *testing.T) {
 			json:    `{ "container-field": { "leaf2-field":  "forty-two"} }`,
 			wantErr: `got string type for field leaf2-field, expect float64`,
 		},
+		{
+			desc:   "unknown field name with ignore",
+			schema: containerSchema,
+			json:   `{"container-field": {"aug-field": 43 } }`,
+			opts:   []UnmarshalOpt{&IgnoreExtraFields{}},
+			want:   &ParentContainerStruct{ContainerField: &ContainerStruct{}},
+		},
 	}
 
 	var jsonTree interface{}
@@ -295,7 +304,7 @@ func TestUnmarshalContainer(t *testing.T) {
 				}
 			}
 
-			err := Unmarshal(tt.schema, &parent, jsonTree)
+			err := Unmarshal(tt.schema, &parent, jsonTree, tt.opts...)
 			if got, want := errToString(err), tt.wantErr; got != want {
 				t.Errorf("%s: got error: %v, want error: %v", tt.desc, got, want)
 			}

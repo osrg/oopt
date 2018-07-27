@@ -175,7 +175,8 @@
   revision = "b6e1e28273ad274f9240361b3a1ae65d27c045ac"
 
 [[projects]]
-  digest = "1:8f366c4bfc7d7b35ad6365ac9b00ade696fb07015f1688a4ad8204506ddc9133"
+  branch = "master"
+  digest = "1:9df51af26a67bb826c3a78cd19e0fdc3244d7d47d4aed9b929f86dd5813071d0"
   name = "github.com/openconfig/ygot"
   packages = [
     "util",
@@ -183,8 +184,7 @@
     "ytypes",
   ]
   pruneopts = ""
-  revision = "b71b4131ec632fdb387e35dfe635182ad2368c1f"
-  version = "v0.5.0"
+  revision = "73127b61d5b493aed4da081b1eb0753a2d8b677b"
 
 [[projects]]
   digest = "1:049b5bee78dfdc9628ee0e557219c41f683e5b06c5a5f20eaba0105ccc586689"

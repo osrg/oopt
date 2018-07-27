@@ -22,9 +22,10 @@ import (
 	"testing"
 
 	"github.com/kylelemons/godebug/pretty"
-	"github.com/pmezard/go-difflib/difflib"
 
+	"github.com/openconfig/gnmi/errdiff"
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
+	"github.com/openconfig/ygot/testutil"
 )
 
 const (
@@ -32,20 +33,6 @@ const (
 	// to any filename that is to be loaded.
 	TestRoot string = ""
 )
-
-// generateUnifiedDiff takes two strings and generates a diff that can be
-// shown to the user in a test error message.
-func generateUnifiedDiff(want, got string) (string, error) {
-	diffl := difflib.UnifiedDiff{
-		A:        difflib.SplitLines(got),
-		B:        difflib.SplitLines(want),
-		FromFile: "got",
-		ToFile:   "want",
-		Context:  3,
-		Eol:      "\n",
-	}
-	return difflib.GetUnifiedDiffString(diffl)
-}
 
 // errToString returns an error as a string.
 func errToString(err error) string {
@@ -275,6 +262,38 @@ func TestEnumFieldToString(t *testing.T) {
 	}
 }
 
+func TestEnumName(t *testing.T) {
+	tests := []struct {
+		name             string
+		in               GoEnum
+		want             string
+		wantErrSubstring string
+	}{{
+		name: "simple enumeration",
+		in:   EONE,
+		want: "VAL_ONE",
+	}, {
+		name: "unset",
+		in:   EUNSET,
+		want: "",
+	}, {
+		name:             "bad enumeration",
+		in:               BONE,
+		wantErrSubstring: "cannot map enumerated value as type badEnumTest was unknown",
+	}}
+
+	for _, tt := range tests {
+		got, err := EnumName(tt.in)
+		if diff := errdiff.Substring(err, tt.wantErrSubstring); diff != "" {
+			t.Errorf("%s: EnumName(%v): did not get expected error, %s", tt.name, tt.in, diff)
+		}
+
+		if got != tt.want {
+			t.Errorf("%s: EnumName(%v): did not get expected value, got: %s, want: %s", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
 // mapStructTestOne is the base struct used for the simple-schema test.
 type mapStructTestOne struct {
 	Child *mapStructTestOneChild `path:"child" module:"test-one"`
@@ -496,6 +515,13 @@ func TestEmitJSON(t *testing.T) {
 		inStruct: &mapStructInvalid{Name: String("aardvark")},
 		wantErr:  "validation err: invalid",
 	}, {
+		name:     "invalid with skip validation",
+		inStruct: &mapStructInvalid{Name: String("aardwolf")},
+		inConfig: &EmitJSONConfig{
+			SkipValidation: true,
+		},
+		wantJSONPath: filepath.Join(TestRoot, "testdata", "invalid-struct.json-txt"),
+	}, {
 		name:     "invalid internal JSON",
 		inStruct: &mapStructNoPaths{Name: String("honey badger")},
 		wantErr:  "ConstructInternalJSON error: Name: field did not specify a path",
@@ -521,12 +547,12 @@ func TestEmitJSON(t *testing.T) {
 
 		wantJSON, ioerr := ioutil.ReadFile(tt.wantJSONPath)
 		if ioerr != nil {
-			t.Errorf("%s: ioutil.ReadFile(%s): could not open file: %v", tt.name, tt.wantJSONPath, err)
+			t.Errorf("%s: ioutil.ReadFile(%s): could not open file: %v", tt.name, tt.wantJSONPath, ioerr)
 			continue
 		}
 
 		if diff := pretty.Compare(got, string(wantJSON)); diff != "" {
-			if diffl, err := generateUnifiedDiff(got, string(wantJSON)); err == nil {
+			if diffl, err := testutil.GenerateUnifiedDiff(got, string(wantJSON)); err == nil {
 				diff = diffl
 			}
 			t.Errorf("%s: EmitJSON(%v, nil): got invalid JSON, diff(-got,+want):\n%s", tt.name, tt.inStruct, diff)
@@ -546,9 +572,10 @@ func (*emptyTreeTestOne) IsYANGGoStruct() {}
 
 // emptyTreeTestTwo is a test case for TestBuildEmptyTree
 type emptyTreeTestTwo struct {
-	SliceVal  []*emptyTreeTestTwoChild
-	MapVal    map[string]*emptyTreeTestTwoChild
-	StructVal *emptyTreeTestTwoChild
+	SliceVal     []*emptyTreeTestTwoChild
+	MapVal       map[string]*emptyTreeTestTwoChild
+	StructVal    *emptyTreeTestTwoChild
+	StructValTwo *emptyTreeTestTwoChild
 }
 
 // IsYANGGoStruct ensures that emptyTreeTestTwo implements the GoStruct interface
@@ -572,9 +599,23 @@ func TestBuildEmptyTree(t *testing.T) {
 		name:     "struct with children",
 		inStruct: &emptyTreeTestTwo{},
 		want: &emptyTreeTestTwo{
-			SliceVal:  []*emptyTreeTestTwoChild{},
-			MapVal:    map[string]*emptyTreeTestTwoChild{},
-			StructVal: &emptyTreeTestTwoChild{},
+			SliceVal:     []*emptyTreeTestTwoChild{},
+			MapVal:       map[string]*emptyTreeTestTwoChild{},
+			StructVal:    &emptyTreeTestTwoChild{},
+			StructValTwo: &emptyTreeTestTwoChild{},
+		},
+	}, {
+		name: "struct with already populated child",
+		inStruct: &emptyTreeTestTwo{
+			StructVal: &emptyTreeTestTwoChild{
+				Val: "foo",
+			},
+		},
+		want: &emptyTreeTestTwo{
+			StructVal: &emptyTreeTestTwoChild{
+				Val: "foo",
+			},
+			StructValTwo: &emptyTreeTestTwoChild{},
 		},
 	}}
 
@@ -582,6 +623,153 @@ func TestBuildEmptyTree(t *testing.T) {
 		BuildEmptyTree(tt.inStruct)
 		if diff := pretty.Compare(tt.inStruct, tt.want); diff != "" {
 			t.Errorf("%s: did not get expected output, diff(-got,+want):\n%s", tt.name, diff)
+		}
+	}
+}
+
+type emptyBranchTestOne struct {
+	String    *string
+	Struct    *emptyBranchTestOneChild
+	StructMap map[string]*emptyBranchTestOneChild
+}
+
+func (*emptyBranchTestOne) IsYANGGoStruct() {}
+
+type emptyBranchTestOneChild struct {
+	String     *string
+	Enumerated int64
+	Struct     *emptyBranchTestOneGrandchild
+}
+
+func (*emptyBranchTestOneChild) IsYANGGoStruct() {}
+
+type emptyBranchTestOneGrandchild struct {
+	String *string
+	Slice  []string
+	Struct *emptyBranchTestOneGreatGrandchild
+}
+
+func (*emptyBranchTestOneGrandchild) IsYANGGoStruct() {}
+
+type emptyBranchTestOneGreatGrandchild struct {
+	String *string
+}
+
+func (*emptyBranchTestOneGreatGrandchild) IsYANGGoStruct() {}
+
+func TestPruneEmptyBranches(t *testing.T) {
+	tests := []struct {
+		name     string
+		inStruct GoStruct
+		want     GoStruct
+	}{{
+		name:     "struct with no children",
+		inStruct: &emptyBranchTestOne{},
+		want:     &emptyBranchTestOne{},
+	}, {
+		name: "struct with empty child",
+		inStruct: &emptyBranchTestOne{
+			String: String("hello"),
+			Struct: &emptyBranchTestOneChild{},
+		},
+		want: &emptyBranchTestOne{
+			String: String("hello"),
+		},
+	}, {
+		name: "struct with populated child",
+		inStruct: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				String: String("foo"),
+			},
+		},
+		want: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				String: String("foo"),
+			},
+		},
+	}, {
+		name: "struct with populated child with unpopulated grandchild",
+		inStruct: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				String: String("bar"),
+				Struct: &emptyBranchTestOneGrandchild{},
+			},
+		},
+		want: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				String: String("bar"),
+			},
+		},
+	}, {
+		name: "struct with populated grandchild",
+		inStruct: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				String: String("bar"),
+				Struct: &emptyBranchTestOneGrandchild{
+					String: String("baz"),
+				},
+			},
+		},
+		want: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				String: String("bar"),
+				Struct: &emptyBranchTestOneGrandchild{
+					String: String("baz"),
+				},
+			},
+		},
+	}, {
+		name: "struct with unpopulated child and grandchild",
+		inStruct: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				Struct: &emptyBranchTestOneGrandchild{},
+			},
+		},
+		want: &emptyBranchTestOne{},
+	}, {
+		name: "struct with map with unpopulated children",
+		inStruct: &emptyBranchTestOne{
+			StructMap: map[string]*emptyBranchTestOneChild{
+				"value": {
+					String: String("value"),
+					Struct: &emptyBranchTestOneGrandchild{
+						Struct: &emptyBranchTestOneGreatGrandchild{},
+					},
+				},
+			},
+		},
+		want: &emptyBranchTestOne{
+			StructMap: map[string]*emptyBranchTestOneChild{
+				"value": {
+					String: String("value"),
+				},
+			},
+		},
+	}, {
+		name: "struct with slice, and enumerated value",
+		inStruct: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				Enumerated: 42,
+				Struct: &emptyBranchTestOneGrandchild{
+					Slice:  []string{"one", "two"},
+					Struct: &emptyBranchTestOneGreatGrandchild{},
+				},
+			},
+		},
+		want: &emptyBranchTestOne{
+			Struct: &emptyBranchTestOneChild{
+				Enumerated: 42,
+				Struct: &emptyBranchTestOneGrandchild{
+					Slice: []string{"one", "two"},
+				},
+			},
+		},
+	}}
+
+	for _, tt := range tests {
+		PruneEmptyBranches(tt.inStruct)
+		if diff := pretty.Compare(tt.inStruct, tt.want); diff != "" {
+			t.Errorf("%s: PruneEmptyBranches(%#v): did not get expected output, diff(-got,+want):\n%s", tt.name, tt.inStruct, diff)
 		}
 	}
 }
@@ -1120,7 +1308,9 @@ func TestCopyStruct(t *testing.T) {
 		inDst: &copyTest{
 			StringSlice: []string{"feral-brewing-co-hop-hog", "balter-brewing-xpa"},
 		},
-		wantErr: true, // Input combination not supported, destination slice must be nil.
+		wantDst: &copyTest{
+			StringSlice: []string{"feral-brewing-co-hop-hog", "balter-brewing-xpa", "stone-and-wood-pacific", "pirate-life-brewing-iipa"},
+		},
 	}, {
 		name: "string map",
 		inSrc: &copyTest{
@@ -1257,7 +1447,7 @@ func TestCopyStruct(t *testing.T) {
 			}},
 		},
 	}, {
-		name: "unimplemented: struct slice with overlapping contents",
+		name: "struct slice with overlapping contents",
 		inSrc: &copyTest{
 			StructSlice: []*copyTest{{
 				StringField: String("pirate-life-brewing-ipa"),
@@ -1268,7 +1458,13 @@ func TestCopyStruct(t *testing.T) {
 				StringField: String("gage-roads-little-dove"),
 			}},
 		},
-		wantErr: true, // Input combination unimplemented, destination slice must be nil.
+		wantDst: &copyTest{
+			StructSlice: []*copyTest{{
+				StringField: String("gage-roads-little-dove"),
+			}, {
+				StringField: String("pirate-life-brewing-ipa"),
+			}},
+		},
 	}, {
 		name:    "error, integer in interface",
 		inSrc:   &errorCopyTest{I: 42},
@@ -1313,6 +1509,11 @@ func TestCopyStruct(t *testing.T) {
 		inSrc:   &copyTest{StringField: String("camden-hells")},
 		inDst:   &errorCopyTest{S: String("kernel-table-beer")},
 		wantErr: true,
+	}, {
+		name:    "error, slice fields not unique",
+		inSrc:   &copyTest{StringSlice: []string{"mikkeler-draft-bear"}},
+		inDst:   &copyTest{StringSlice: []string{"mikkeler-draft-bear"}},
+		wantErr: true,
 	}}
 
 	for _, tt := range tests {
@@ -1356,6 +1557,18 @@ func (*validatedMergeTestTwo) Validate(...ValidationOption) error      { return 
 func (*validatedMergeTestTwo) IsYANGGoStruct()                         {}
 func (*validatedMergeTestTwo) ΛEnumTypeMap() map[string][]reflect.Type { return nil }
 
+type validatedMergeTestWithSlice struct {
+	SliceField []*validatedMergeTestSliceField
+}
+
+func (*validatedMergeTestWithSlice) Validate(...ValidationOption) error      { return nil }
+func (*validatedMergeTestWithSlice) IsYANGGoStruct()                         {}
+func (*validatedMergeTestWithSlice) ΛEnumTypeMap() map[string][]reflect.Type { return nil }
+
+type validatedMergeTestSliceField struct {
+	String *string
+}
+
 func TestMergeStructs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1396,7 +1609,28 @@ func TestMergeStructs(t *testing.T) {
 		name:    "error, field set in both structs",
 		inA:     &validatedMergeTest{String: String("karbach-hopadillo")},
 		inB:     &validatedMergeTest{String: String("blackwater-draw-brewing-co-border-town")},
-		wantErr: "error merging b to new struct: destination value was set when merging, src: blackwater-draw-brewing-co-border-town, dst: karbach-hopadillo",
+		wantErr: "error merging b to new struct: destination value was set, but was not equal to source value when merging ptr field, src: blackwater-draw-brewing-co-border-town, dst: karbach-hopadillo",
+	}, {
+		name: "allow leaf overwrite if equal",
+		inA:  &validatedMergeTest{String: String("new-belgium-sour-saison")},
+		inB:  &validatedMergeTest{String: String("new-belgium-sour-saison")},
+		want: &validatedMergeTest{String: String("new-belgium-sour-saison")},
+	}, {
+		name:    "error - merge leaf overwrite but not equal",
+		inA:     &validatedMergeTest{String: String("schneider-weisse-hopfenweisse")},
+		inB:     &validatedMergeTest{String: String("deschutes-jubelale")},
+		wantErr: "error merging b to new struct: destination value was set, but was not equal to source value when merging ptr field, src: deschutes-jubelale, dst: schneider-weisse-hopfenweisse",
+	}, {
+		name: "merge fields with slice of structs",
+		inA: &validatedMergeTestWithSlice{
+			SliceField: []*validatedMergeTestSliceField{{String("chinook-single-hop")}},
+		},
+		inB: &validatedMergeTestWithSlice{
+			SliceField: []*validatedMergeTestSliceField{{String("citrus-dream")}},
+		},
+		want: &validatedMergeTestWithSlice{
+			SliceField: []*validatedMergeTestSliceField{{String("chinook-single-hop")}, {String("citrus-dream")}},
+		},
 	}}
 
 	for _, tt := range tests {
@@ -1710,5 +1944,86 @@ func TestBuildEmptyTreeMerge(t *testing.T) {
 			t.Errorf("%s: MergeStructs(%v, %v): did not get expected merge result, diff(-got,+want):\n%s", tt.name, tt.inStructA, tt.inStructB, diff)
 		}
 
+	}
+}
+
+func TestUniqueSlices(t *testing.T) {
+	type stringPtrStruct struct {
+		Foo *string
+	}
+
+	type sliceStruct struct {
+		Bar []string
+	}
+
+	tests := []struct {
+		name             string
+		inA              reflect.Value
+		inB              reflect.Value
+		wantUnique       bool
+		wantErrSubstring string
+	}{{
+		name:       "unique strings",
+		inA:        reflect.ValueOf([]string{"zest-please"}),
+		inB:        reflect.ValueOf([]string{"amarillo-single-hop-ipa"}),
+		wantUnique: true,
+	}, {
+		name:       "unique integers",
+		inA:        reflect.ValueOf([]int{1, 2, 3}),
+		inB:        reflect.ValueOf([]int{4, 5, 6}),
+		wantUnique: true,
+	}, {
+		name:             "error: mismatched types",
+		inA:              reflect.ValueOf([]string{"american-dream"}),
+		inB:              reflect.ValueOf([]int{42}),
+		wantErrSubstring: "a and b do not contain the same type",
+	}, {
+		name:             "error: not slices",
+		inA:              reflect.ValueOf("beer-geek-breakfast"),
+		inB:              reflect.ValueOf([]string{"beer-mile"}),
+		wantErrSubstring: "a and b must both be slices",
+	}, {
+		name:       "not unique, strings",
+		inA:        reflect.ValueOf([]string{"beobrew-ipa", "berliner-weisse"}),
+		inB:        reflect.ValueOf([]string{"beobrew-ipa", "big-worse"}),
+		wantUnique: false,
+	}, {
+		name:       "not unique, integers",
+		inA:        reflect.ValueOf([]int{42, 84, 96}),
+		inB:        reflect.ValueOf([]int{128, 256, 42}),
+		wantUnique: false,
+	}, {
+		name:       "unique, string ptr struct",
+		inA:        reflect.ValueOf([]*stringPtrStruct{{String("belgian-tripel")}}),
+		inB:        reflect.ValueOf([]*stringPtrStruct{{String("black-bear")}}),
+		wantUnique: true,
+	}, {
+		name:       "not unique, string ptr struct",
+		inA:        reflect.ValueOf([]*stringPtrStruct{{String("black-hole")}}),
+		inB:        reflect.ValueOf([]*stringPtrStruct{{String("black-hole")}}),
+		wantUnique: false,
+	}, {
+		name:       "unique, slice ptr struct",
+		inA:        reflect.ValueOf([]*sliceStruct{{[]string{"california-dream"}}}),
+		inB:        reflect.ValueOf([]*sliceStruct{{[]string{"caretaker"}}}),
+		wantUnique: true,
+	}, {
+		name:       "not unique, slice ptr struct",
+		inA:        reflect.ValueOf([]*sliceStruct{{[]string{"chill-pils"}}}),
+		inB:        reflect.ValueOf([]*sliceStruct{{[]string{"chill-pils"}}}),
+		wantUnique: false,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := uniqueSlices(tt.inA, tt.inB)
+			if diff := errdiff.Substring(err, tt.wantErrSubstring); diff != "" {
+				t.Fatalf("%s: uniqueSlices(%v, %v): did not get expected error, %s", tt.name, tt.inA, tt.inB, diff)
+			}
+
+			if want := tt.wantUnique; got != want {
+				t.Fatalf("%s: uniqueSlices(%v, %v): did not get expected unique status, got: %v, want: %v", tt.name, tt.inA, tt.inB, got, want)
+			}
+		})
 	}
 }

@@ -75,6 +75,14 @@ func structTagToLibPaths(f reflect.StructField, parentPath *gnmiPath) ([]*gnmiPa
 	return mapPaths, nil
 }
 
+// EnumName returns the string name of an input GoEnum e. If the enumeration is
+// unset, the name returned is an empty string, otherwise it is the name defined
+// within the YANG schema.
+func EnumName(e GoEnum) (string, error) {
+	name, _, err := enumFieldToString(reflect.ValueOf(e), false)
+	return name, err
+}
+
 // enumFieldToString takes an input reflect.Value, which is type asserted to
 // be a GoEnum, and resolves the string name corresponding to the value within
 // the YANG schema. Returns the string name of the enum, a bool indicating
@@ -126,7 +134,8 @@ func enumFieldToString(field reflect.Value, appendModuleName bool) (string, bool
 // provided. This allows the YANG container hierarchy (i.e., any structs within
 // the tree) to be pre-initialised rather than requiring the user to initialise
 // each as it is required. Given that some trees may be large, then some
-// caution should be exercised in initialising an entire tree.
+// caution should be exercised in initialising an entire tree. If struct pointer
+// fields are non-nil, they are considered initialised, and are skipped.
 func BuildEmptyTree(s GoStruct) {
 	initialiseTree(reflect.ValueOf(s).Elem().Type(), reflect.ValueOf(s).Elem())
 }
@@ -138,16 +147,125 @@ func initialiseTree(t reflect.Type, v reflect.Value) {
 		fVal := v.Field(i)
 		fType := t.Field(i)
 
-		if fType.Type.Kind() == reflect.Ptr {
+		if util.IsTypeStructPtr(fType.Type) {
 			// Only initialise nested struct pointers, since all struct fields within
 			// a GoStruct are expected to be pointers, and we do not want to initialise
-			// non-struct values.
-			if pVal := reflect.New(fType.Type.Elem()); pVal.Elem().Type().Kind() == reflect.Struct {
-				initialiseTree(pVal.Elem().Type(), pVal.Elem())
-				fVal.Set(pVal)
+			// non-struct values. If the struct pointer is not nil, it is skipped.
+			if !fVal.IsNil() {
+				continue
 			}
+
+			pVal := reflect.New(fType.Type.Elem())
+			initialiseTree(pVal.Elem().Type(), pVal.Elem())
+			fVal.Set(pVal)
 		}
 	}
+}
+
+// PruneEmptyBranches removes branches that have no populated children from the
+// GoStruct s in-place. This allows a YANG container hierarchy that has been
+// initialised with BuildEmptyTree to have those branches that were not populated
+// removed from the tree. All subtrees rooted at the supplied GoStruct are traversed
+// and any encountered GoStruct pointer fields are removed if they equate to
+// the zero value (i.e. are unpopulated).
+func PruneEmptyBranches(s GoStruct) {
+	v := reflect.ValueOf(s).Elem()
+	pruneBranchesInternal(v.Type(), v)
+}
+
+// pruneBranchesInternal implements the logic to remove empty branches from the
+// supplied reflect.Type, reflect.Value which must represent a GoStruct. An empty
+// tree is defined to be a struct that is equal to its zero value. Only struct
+// pointer fields are examined, since these are subtrees within the generated GoStruct
+// types. It returns a bool which indicates whether all fields of the struct were
+// removed.
+func pruneBranchesInternal(t reflect.Type, v reflect.Value) bool {
+	// Track whether all fields of the GoStruct are nil, such that it can
+	// be returned to the caller. This allows parents that have all empty
+	// children to be removed. This is required because BuildEmptyTree will
+	// propagate to all branches.
+	allChildrenPruned := true
+	for i := 0; i < v.NumField(); i++ {
+		fVal := v.Field(i)
+		fType := t.Field(i)
+		if util.IsTypeStructPtr(fType.Type) {
+			// Create an empty version of the struct that is within the struct pointer.
+			// We can safely call Elem() here since we verified above that this type
+			// is a struct pointer.
+			zVal := reflect.Zero(fType.Type.Elem())
+
+			switch {
+			case fVal.IsNil():
+				// Ensure that if the field value was actually nil, we skip over this
+				// field since its already nil.
+				continue
+			case reflect.DeepEqual(zVal.Interface(), fVal.Elem().Interface()):
+				// In the case that the zero value's interface is the same as the
+				// dereferenced field value's nil value, then we set it to the zero value
+				// of the field type. The fType contains a pointer to the struct, so
+				// reflect.Zero returns nil here.
+				fVal.Set(reflect.Zero(fType.Type))
+				continue
+			default:
+				// If this wasn't an empty struct then we need to recurse to remove
+				// any nil children of this struct.
+				sv := fVal.Elem()
+				childPruned := pruneBranchesInternal(sv.Type(), sv)
+				if childPruned {
+					// If all fields of the downstream branches are nil, then
+					// also prune this field.
+					fVal.Set(reflect.Zero(fType.Type))
+				} else {
+					allChildrenPruned = false
+				}
+			}
+			continue
+		}
+
+		// If the struct field wasn't a struct pointer, then we need to check whether it
+		// is the nil value of its type.
+		switch {
+		case util.IsTypeSlice(fType.Type):
+			if (fVal.Len() != 0) && allChildrenPruned {
+				allChildrenPruned = false
+			}
+		case util.IsTypeMap(fType.Type):
+			if fVal.Len() != 0 && allChildrenPruned {
+				allChildrenPruned = false
+			}
+
+			// Recurse into maps where the children may have already been initialised.
+			for _, k := range fVal.MapKeys() {
+				mi := fVal.MapIndex(k)
+				if !util.IsValueStructPtr(mi) {
+					continue
+				}
+				sv := mi.Elem()
+				// We can discard the pruneBranchesInternal return value, since we
+				// know that this map field has len > 0, and therefore cannot be
+				// pruned.
+				_ = pruneBranchesInternal(sv.Type(), sv)
+			}
+		default:
+			// Handle the case of a non-map/slice/struct pointer field.
+			v := fVal
+			t := fType.Type
+			if fType.Type.Kind() == reflect.Ptr {
+				if !v.IsNil() {
+					allChildrenPruned = false
+					continue
+				}
+				// Dereference the pointer to allow a zero check.
+				v = v.Elem()
+				t = t.Elem()
+			}
+			if v.IsValid() && !reflect.DeepEqual(reflect.Zero(t).Interface(), v.Interface()) {
+				allChildrenPruned = false
+			}
+		}
+
+	}
+	return allChildrenPruned
 }
 
 // InitContainer initialises the container cname of the GoStruct s, it can be
@@ -203,6 +321,10 @@ type EmitJSONConfig struct {
 	// Indent is the string used for indentation within the JSON output. The
 	// default value is three spaces.
 	Indent string
+	// SkipValidation specifies whether the GoStruct supplied to EmitJSON should
+	// be validated before emitting its content. Validation is skipped when it
+	// is set to true.
+	SkipValidation bool
 	// ValidationOpts is the set of options that should be used to determine how
 	// the schema should be validated. This allows fine-grained control of particular
 	// validation rules in the case that a partially populated data instance is
@@ -213,12 +335,17 @@ type EmitJSONConfig struct {
 // EmitJSON takes an input ValidatedGoStruct (produced by ygen with validation enabled)
 // and serialises it to a JSON string. By default, produces the Internal format JSON.
 func EmitJSON(s ValidatedGoStruct, opts *EmitJSONConfig) (string, error) {
-	var vopts []ValidationOption
+	var (
+		vopts          []ValidationOption
+		skipValidation bool
+	)
+
 	if opts != nil {
 		vopts = opts.ValidationOpts
+		skipValidation = opts.SkipValidation
 	}
 
-	if err := s.Validate(vopts...); err != nil {
+	if err := s.Validate(vopts...); !skipValidation && err != nil {
 		return "", fmt.Errorf("validation err: %v", err)
 	}
 
@@ -336,13 +463,9 @@ func MergeJSON(a, b map[string]interface{}) (map[string]interface{}, error) {
 // returning a new ValidatedGoStruct. If the input structs a and b are of
 // different types, an error is returned.
 //
-// In the case that the structs contain a slice, or a map that is already
-// populated in both structs, an error is returned. Merging two lists with
-// identical members will be added in future iterations of this code.
-//
-// TODO(robjs): Fix the unimplemented test cases where two structs of
-// the same type have slices or maps that are already populated.
-// See https://github.com/openconfig/ygot/issues/74.
+// Where two structs contain maps or slices that are populated in both a and b
+// their contents are merged. If a leaf is populated in both a and b, an error
+// is returned if the value of the leaf is not equal.
 func MergeStructs(a, b ValidatedGoStruct) (ValidatedGoStruct, error) {
 	if reflect.TypeOf(a) != reflect.TypeOf(b) {
 		return nil, fmt.Errorf("cannot merge structs that are not of matching types, %T != %T", a, b)
@@ -413,7 +536,9 @@ func copyStruct(dstVal, srcVal reflect.Value) error {
 // reflect.Value structs which represent pointers. If the source and destination
 // are struct pointers, then their contents are merged. If the source and
 // destination are non-struct pointers, values are not merged and an error
-// is returned.
+// is returned. If the source and destination both have a pointer field, which is
+// populated then an error is returned unless the value of the field is
+// equal in both structs.
 func copyPtrField(dstField, srcField reflect.Value) error {
 
 	if util.IsNilOrInvalidValue(srcField) {
@@ -445,8 +570,9 @@ func copyPtrField(dstField, srcField reflect.Value) error {
 	}
 
 	if !util.IsNilOrInvalidValue(dstField) {
-		// Return an error when we are overwriting fields in the destination.
-		return fmt.Errorf("destination value was set when merging, src: %v, dst: %v", srcField.Elem().Interface(), dstField.Elem().Interface())
+		if s, d := srcField.Elem().Interface(), dstField.Elem().Interface(); !reflect.DeepEqual(s, d) {
+			return fmt.Errorf("destination value was set, but was not equal to source value when merging ptr field, src: %v, dst: %v", s, d)
+		}
 	}
 
 	p := reflect.New(srcField.Type().Elem())
@@ -578,31 +704,67 @@ func validateMap(srcField, dstField reflect.Value) (*mapType, error) {
 // copySliceField copies srcField into dstField. Both srcField and dstField
 // must have a kind of reflect.Slice kind and contain pointers to structs. If
 // the slice in dstField is populated an error is returned.
-// TODO(robjs): Implement merging of slice fields when they are populated in the
-// dstField, see https://github.com/openconfig/ygot/issues/74.
 func copySliceField(dstField, srcField reflect.Value) error {
-	if dstField.Len() != 0 {
-		return fmt.Errorf("unimplemented: cannot map slice where destination was set, src: %v, dst: %v", srcField.Interface(), dstField.Interface())
-	}
-
-	if !util.IsTypeStructPtr(srcField.Type().Elem()) {
-		dstField.Set(srcField)
+	if dstField.Len() == 0 && srcField.Len() == 0 {
 		return nil
 	}
 
-	if srcField.Len() == 0 {
+	unique, err := uniqueSlices(dstField, srcField)
+	if err != nil {
+		return fmt.Errorf("error checking src and dst for uniqueness, got: %v", err)
+	}
+
+	if !unique {
+		// YANG lists and leaf-lists must be unique.
+		return fmt.Errorf("source and destination lists must be unique, got src: %v, dst: %v", srcField, dstField)
+	}
+
+	if !util.IsTypeStructPtr(srcField.Type().Elem()) {
+		ns := reflect.MakeSlice(reflect.SliceOf(srcField.Type().Elem()), 0, 0)
+		for _, field := range []reflect.Value{dstField, srcField} {
+			for i := 0; i < field.Len(); i++ {
+				v := field.Index(i)
+				ns = reflect.Append(ns, v)
+			}
+		}
+		dstField.Set(ns)
 		return nil
 	}
 
 	ns := reflect.MakeSlice(reflect.SliceOf(srcField.Type().Elem()), 0, 0)
-	for i := 0; i < srcField.Len(); i++ {
-		v := srcField.Index(i)
-		d := reflect.New(v.Type().Elem())
-		if err := copyStruct(d.Elem(), v.Elem()); err != nil {
-			return err
+	for _, field := range []reflect.Value{dstField, srcField} {
+		for i := 0; i < field.Len(); i++ {
+			v := field.Index(i)
+			d := reflect.New(v.Type().Elem())
+			if err := copyStruct(d.Elem(), v.Elem()); err != nil {
+				return err
+			}
+			ns = reflect.Append(ns, d)
 		}
-		ns = reflect.Append(ns, d)
 	}
+
 	dstField.Set(ns)
 	return nil
+}
+
+// uniqueSlices takes two reflect.Values which must represent slices, and determines
+// whether a and b contain the same item. It returns true if the slices have unique
+// members, and false if not.
+func uniqueSlices(a, b reflect.Value) (bool, error) {
+	if !util.IsValueSlice(a) || !util.IsValueSlice(b) {
+		return false, fmt.Errorf("a and b must both be slices, got a: %v, b: %v", a.Type().Kind(), b.Type().Kind())
+	}
+
+	if a.Type().Elem() != b.Type().Elem() {
+		return false, fmt.Errorf("a and b do not contain the same type, got a: %v, b: %v", a.Type().Elem().Kind(), b.Type().Elem().Kind())
+	}
+
+	for i := 0; i < a.Len(); i++ {
+		for j := 0; j < b.Len(); j++ {
+			if reflect.DeepEqual(a.Index(i).Interface(), b.Index(j).Interface()) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }

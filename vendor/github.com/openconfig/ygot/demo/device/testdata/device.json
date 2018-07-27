@@ -7,6 +7,7 @@
             },
             "name": "os",
             "state": {
+               "description": "RouterOS 14.0",
                "type": "OPERATING_SYSTEM"
             }
          }
@@ -55,6 +56,11 @@
    },
    "system": {
       "config": {
+         "@hostname": [
+            {
+               "cfg-source": "devicedemo"
+            }
+         ],
          "hostname": "rtr02.pop44"
       }
    }

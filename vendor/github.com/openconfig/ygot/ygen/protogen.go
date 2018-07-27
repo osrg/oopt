@@ -338,12 +338,30 @@ type protoMsgConfig struct {
 //  the message.
 func writeProto3Msg(msg *yangDirectory, msgs map[string]*yangDirectory, state *genState, cfg *protoMsgConfig) (*generatedProto3Message, util.Errors) {
 	if cfg.nestedMessages {
-		if !isChildOfModule(msg) {
+		if !outputNestedMessage(msg, cfg.compressPaths) {
 			return nil, nil
 		}
 		return writeProto3MsgNested(msg, msgs, state, cfg)
 	}
 	return writeProto3MsgSingleMsg(msg, msgs, state, cfg)
+}
+
+// outputNestedMessage determines whether the message represented by the supplied
+// yangDirectory is a message that should be output when nested messages are being
+// created. The compressPaths argument specifies whether path compression is enabled.
+// Valid messages are those that are direct children of a module, or become a direct
+// child when path compression is enabled (i.e., lists that have their parent
+// surrounding container removed).
+func outputNestedMessage(msg *yangDirectory, compressPaths bool) bool {
+	// If path compression is enabled, and this entry is a list, then its top-level
+	// parent will have been removed, therefore this is a valid message. The path
+	// is 4 elements long since it is of the form
+	// []string{"", module-name, surrounding-container, list-name}.
+	if compressPaths && msg.entry.IsList() && len(msg.path) == 4 {
+		return true
+	}
+
+	return isChildOfModule(msg)
 }
 
 // writeProto3MsgNested returns a nested set of protobuf messages for the message
@@ -369,7 +387,7 @@ func writeProto3MsgNested(msg *yangDirectory, msgs map[string]*yangDirectory, st
 		}
 	}
 
-	pkg, err := protobufPackageForMsg(msg, state, cfg.compressPaths)
+	pkg, err := protobufPackageForMsg(msg, state, cfg.compressPaths, cfg.nestedMessages)
 	if err != nil {
 		return nil, append(gerrs, err)
 	}
@@ -383,6 +401,10 @@ func writeProto3MsgNested(msg *yangDirectory, msgs map[string]*yangDirectory, st
 	gmsg, errs := genProto3MsgCode(pkg, msgDefs, false)
 	if errs != nil {
 		return nil, append(gerrs, errs...)
+	}
+
+	if gerrs != nil {
+		return nil, gerrs
 	}
 
 	// Inherit the set of imports that are required for this child. We
@@ -419,9 +441,11 @@ func writeProto3MsgNested(msg *yangDirectory, msgs map[string]*yangDirectory, st
 }
 
 // protobufPackageForMsg takes a YANG directory definition, the current generator
-// state, and whether path compression is enabled or disabled and returns the
-// protobuf package that the generated protobuf3 message should be defined within.
-func protobufPackageForMsg(msg *yangDirectory, state *genState, compressPaths bool) (string, error) {
+// state, whether path compression is currently enabled, and whether nested messages
+// are to be output and determines the package name for the output protobuf. In the
+// case that nested messages are being output, the package name is derived based
+// on the top-level module that the message is within.
+func protobufPackageForMsg(msg *yangDirectory, state *genState, compressPaths, nestedMessages bool) (string, error) {
 	switch {
 	case msg.isFakeRoot:
 		// In this case, we explicitly leave the package name as nil, which is interpeted
@@ -430,14 +454,43 @@ func protobufPackageForMsg(msg *yangDirectory, state *genState, compressPaths bo
 	case msg.entry.Parent == nil:
 		return "", fmt.Errorf("YANG schema element %s does not have a parent, protobuf messages are not generated for modules", msg.entry.Path())
 	}
-	return state.protobufPackage(msg.entry, compressPaths), nil
+
+	e := msg.entry
+	// If we have nested messages enabled, the protobuf package name is defined
+	// based on the top-level message within the schema tree that is created -
+	// we therefore need to derive the name of this message.
+	if nestedMessages {
+		if compressPaths {
+			if e.Parent.Parent == nil {
+				// In the special case that the grandparent of this entry is nil, and
+				// compress paths is enabled, then we are a top-level schema element - so
+				// this message should be in the root package.
+				return "", nil
+			}
+			if e.IsList() && e.Parent.Parent.Parent == nil {
+				// If this is a list, and our great-grandparent is a module, then
+				// since the level above this node has been compressed out, then it
+				// is at the root.
+				return "", nil
+			}
+		}
+
+		if e.Parent != nil && e.Parent.Parent != nil {
+			var n *yang.Entry
+			for n = e.Parent; n.Parent.Parent != nil; n = n.Parent {
+			}
+			e = n
+		}
+	}
+
+	return state.protobufPackage(e, compressPaths), nil
 }
 
 // writeProto3MsgSingleMsg generates a protobuf message definition. It takes the
 // arguments of writeProto3Message, outputting an individual message that outputs
 // a package definition and a single protobuf message.
 func writeProto3MsgSingleMsg(msg *yangDirectory, msgs map[string]*yangDirectory, state *genState, cfg *protoMsgConfig) (*generatedProto3Message, util.Errors) {
-	pkg, err := protobufPackageForMsg(msg, state, cfg.compressPaths)
+	pkg, err := protobufPackageForMsg(msg, state, cfg.compressPaths, cfg.nestedMessages)
 	if err != nil {
 		return nil, []error{err}
 	}
@@ -758,6 +811,13 @@ func writeProtoEnums(enums map[string]*yangEnum, annotateEnumNames bool) ([]stri
 	var errs util.Errors
 	var genEnums []string
 	for _, enum := range enums {
+		// TODO(robjs): Currently, we do not skip enumerations that are within unions
+		// that have been extracted by findEnumSet here. This means that we can end
+		// up with duplicate definitions of enumerations within the generated protobufs.
+		// Particularly, an enum may be defined both inline to a message and within the
+		// global enumerations. Additional logic is required to determine the provenance
+		// of such an enum, since we do not store that it was extracted from a union
+		// within the type (or entry) currently.
 		if isSimpleEnumerationType(enum.entry.Type) || enum.entry.Type.Kind == yang.Yunion {
 			// Skip simple enumerations and those within unions.
 			continue
@@ -1204,9 +1264,9 @@ func genListKeyProto(listPackage string, listName string, args *protoDefinitionA
 // enumInProtoUnionField parses an enum that is within a union and returns the generated
 // enumeration that should be included within a protobuf message for it. If annotateEnumNames
 // is set to true, the enumerated value's original names are stored.
-func enumInProtoUnionField(name string, types []*yang.YangType, annotateEnumNames bool) (map[string]*protoMsgEnum, error) {
+func enumInProtoUnionField(name string, etype *yang.YangType, annotateEnumNames bool) (map[string]*protoMsgEnum, error) {
 	enums := map[string]*protoMsgEnum{}
-	for _, t := range types {
+	for _, t := range etype.Type {
 		if isSimpleEnumerationType(t) {
 			n := fmt.Sprintf("%s", yang.CamelCase(name))
 			enum, err := genProtoEnum(&yang.Entry{
@@ -1220,7 +1280,7 @@ func enumInProtoUnionField(name string, types []*yang.YangType, annotateEnumName
 		}
 
 		if isUnionType(t) {
-			es, err := enumInProtoUnionField(name, t.Type, annotateEnumNames)
+			es, err := enumInProtoUnionField(name, t, annotateEnumNames)
 			if err != nil {
 				return nil, err
 			}
@@ -1247,7 +1307,7 @@ type protoUnionField struct {
 // field within the protobuf message. If the annotateEnumNames boolean is set, then any enumerated types
 // within the union have their original names within the YANG schema appended.
 func unionFieldToOneOf(fieldName string, e *yang.Entry, mtype *mappedType, annotateEnumNames bool) (*protoUnionField, error) {
-	enums, err := enumInProtoUnionField(fieldName, e.Type.Type, annotateEnumNames)
+	enums, err := enumInProtoUnionField(fieldName, e.Type, annotateEnumNames)
 	if err != nil {
 		return nil, err
 	}

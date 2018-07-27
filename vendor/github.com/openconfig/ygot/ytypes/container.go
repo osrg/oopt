@@ -52,8 +52,14 @@ func validateContainer(schema *yang.Entry, value ygot.GoStruct) util.Errors {
 		structTypes := structElems.Type()
 
 		for i := 0; i < structElems.NumField(); i++ {
-			fieldName := structElems.Type().Field(i).Name
+			fieldType := structElems.Type().Field(i)
+			fieldName := fieldType.Name
 			fieldValue := structElems.Field(i).Interface()
+
+			// Skip annotation fields when validating the schema.
+			if util.IsYgotAnnotation(fieldType) {
+				continue
+			}
 
 			cschema, err := childSchema(schema, structTypes.Field(i))
 			switch {
@@ -100,10 +106,12 @@ func validateContainer(schema *yang.Entry, value ygot.GoStruct) util.Errors {
 
 // unmarshalContainer unmarshals a JSON tree into a struct.
 //   schema is the schema of the schema node corresponding to the struct being
-//     unmamshaled into.
+//     unmarshaled into.
 //   parent is the parent struct, which must be a struct ptr.
 //   jsonTree is a JSON data tree which must be a map[string]interface{}.
-func unmarshalContainer(schema *yang.Entry, parent interface{}, jsonTree interface{}) error {
+//   opts is the set of options that should be used when unmarshalling the JSON
+//     into the supplied parent.
+func unmarshalContainer(schema *yang.Entry, parent interface{}, jsonTree interface{}, opts ...UnmarshalOpt) error {
 	if util.IsValueNil(jsonTree) {
 		return nil
 	}
@@ -127,7 +135,7 @@ func unmarshalContainer(schema *yang.Entry, parent interface{}, jsonTree interfa
 		return fmt.Errorf("unmarshalContainer got parent type %T, expect struct ptr", parent)
 	}
 
-	return unmarshalStruct(schema, parent, jt)
+	return unmarshalStruct(schema, parent, jt, opts...)
 }
 
 // unmarshalStruct unmarshals a JSON tree into a struct.
@@ -135,7 +143,7 @@ func unmarshalContainer(schema *yang.Entry, parent interface{}, jsonTree interfa
 //     unmarshalled into.
 //   parent is the parent struct, which must be a struct ptr.
 //   jsonTree is a JSON data tree which must be a map[string]interface{}.
-func unmarshalStruct(schema *yang.Entry, parent interface{}, jsonTree map[string]interface{}) error {
+func unmarshalStruct(schema *yang.Entry, parent interface{}, jsonTree map[string]interface{}, opts ...UnmarshalOpt) error {
 	destv := reflect.ValueOf(parent).Elem()
 	var allSchemaPaths [][]string
 	// Range over the parent struct fields. For each field, check if the data
@@ -143,6 +151,13 @@ func unmarshalStruct(schema *yang.Entry, parent interface{}, jsonTree map[string
 	for i := 0; i < destv.NumField(); i++ {
 		f := destv.Field(i)
 		ft := destv.Type().Field(i)
+
+		// Skip annotation fields since they do not have a schema.
+		// TODO(robjs): Implement unmarshalling annotations.
+		if util.IsYgotAnnotation(ft) {
+			continue
+		}
+
 		cschema, err := childSchema(schema, ft)
 		if err != nil {
 			return err
@@ -188,15 +203,18 @@ func unmarshalStruct(schema *yang.Entry, parent interface{}, jsonTree map[string
 			// current container.
 			p = f.Interface()
 		}
-		if err := Unmarshal(cschema, p, jsonValue); err != nil {
+		if err := Unmarshal(cschema, p, jsonValue, opts...); err != nil {
 			return err
 		}
 	}
 
-	// Go over all JSON fields to make sure that each one is covered
-	// by a data path in the struct.
-	if err := checkDataTreeAgainstPaths(jsonTree, allSchemaPaths); err != nil {
-		return fmt.Errorf("parent container %s (type %T): %s", schema.Name, parent, err)
+	// Only check for missing fields if the IgnoreExtraFields option isn't specified.
+	if !hasIgnoreExtraFields(opts) {
+		// Go over all JSON fields to make sure that each one is covered
+		// by a data path in the struct.
+		if err := checkDataTreeAgainstPaths(jsonTree, allSchemaPaths); err != nil {
+			return fmt.Errorf("parent container %s (type %T): %s", schema.Name, parent, err)
+		}
 	}
 
 	util.DbgPrint("container after unmarshal:\n%s\n", pretty.Sprint(destv.Interface()))
