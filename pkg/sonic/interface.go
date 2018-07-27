@@ -40,7 +40,7 @@ func HandlePortDiff(name string, task []DiffTask) (bool, error) {
 	}
 	for _, t := range task {
 		switch path := t.Path.String(); path {
-		case ".Description":
+		case "description":
 		default:
 			return true, nil
 		}
@@ -53,40 +53,31 @@ func HandleInterfaceDiff(newConfig, oldConfig *model.PacketTransponder, name str
 		return fmt.Errorf("invalid optical-module name: %s", name)
 	}
 
-	client, err := NewSONiCDBClient("unix", DEFAULT_REDIS_UNIX_SOCKET, CONFIG_DB)
-	if err != nil {
-		return err
-	}
-
 	modEther := false
 	modOpt := false
 	delOld := false
 
 	for _, t := range task {
+		if t.Type == DiffDeleted {
+			delOld = true
+			break
+		}
 		switch path := t.Path.String(); path {
-		case ".OpticalModuleConnection.OpticalModule":
+		case "optical-module-connection.optical-module.channel":
 			modOpt = true
-		case ".OpticalModuleConnection.OpticalModule.Channel":
+		case "optical-module-connection.optical-module.name":
 			modOpt = true
-		case ".OpticalModuleConnection.OpticalModule.Name":
-			modOpt = true
-		case ".OpticalModuleConnection.Id":
+		case "optical-module-connection.id":
 			modOpt = true
 			modEther = true
-			// This also needs to configure add current opt moculde to new vlan
-		case ".OpticalModuleConnection":
-			c := t.Value.(*model.PacketTransponder_Interface_OpticalModuleConnection)
-			if c == nil {
-				delOld = true
-			} else {
-				modOpt = true
-				if c.Id != nil {
-					modEther = true
-				}
-			}
 		default:
 			fmt.Println("unhandled task:", path)
 		}
+	}
+
+	client, err := NewSONiCDBClient("unix", DEFAULT_REDIS_UNIX_SOCKET, CONFIG_DB)
+	if err != nil {
+		return err
 	}
 
 	// get current vlan

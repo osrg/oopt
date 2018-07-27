@@ -27,11 +27,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openconfig/ygot/ygot"
 	"github.com/osrg/oopt/pkg/model"
 	"github.com/osrg/oopt/pkg/sonic"
 
-	"github.com/d4l3k/messagediff"
+	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
+	"github.com/openconfig/ygot/ygot"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -174,35 +174,8 @@ func getSignature() *object.Signature {
 	}
 }
 
-func handleDiff(newConfig, oldConfig *model.PacketTransponder, diff *messagediff.Diff) (bool, error) {
+func handleDiff(newConfig, oldConfig *model.PacketTransponder, diff *gnmipb.Notification) (bool, error) {
 	rebootOFDPA := false
-
-	if dry {
-		f := func(m map[*messagediff.Path]interface{}) {
-			for k, v := range m {
-				fmt.Println(k, v)
-				fmt.Printf("key: %p\n", k)
-				for _, kn := range []messagediff.PathNode(*k) {
-					switch n := kn.(type) {
-					case messagediff.StructField:
-						fmt.Println("struct:", kn)
-					case messagediff.MapKey:
-						fmt.Println("mapkey:", n.Key)
-					case messagediff.SliceIndex:
-						fmt.Println("index:", kn)
-					}
-				}
-			}
-		}
-
-		fmt.Println("--added--")
-		f(diff.Added)
-		fmt.Println("--removed--")
-		f(diff.Removed)
-		fmt.Println("--modified--")
-		f(diff.Modified)
-		return
-	}
 
 	optDiffTask := map[string][]sonic.DiffTask{}
 	intfDiffTask := map[string][]sonic.DiffTask{}
@@ -210,23 +183,44 @@ func handleDiff(newConfig, oldConfig *model.PacketTransponder, diff *messagediff
 
 	var taskMap map[string][]sonic.DiffTask
 
-	for k, v := range diff.Modified {
-		kn := []messagediff.PathNode(*k)
-		s := string(kn[0].(messagediff.StructField))
-		switch s {
-		case "OpticalModule":
+	for _, u := range diff.Update {
+		elems := u.GetPath().GetElem()
+		e := elems[0]
+		n := elems[1]
+		switch e.Name {
+		case "optical-modules":
 			taskMap = optDiffTask
-		case "Interface":
+		case "interfaces":
 			taskMap = intfDiffTask
-		case "Port":
+		case "ports":
 			taskMap = portDiffTask
 		}
-		name := kn[1].(messagediff.MapKey).Key.(string)
+		name := n.Key["name"]
 		task, ok := taskMap[name]
 		if !ok {
 			task = []sonic.DiffTask{}
 		}
-		taskMap[name] = append(task, sonic.DiffTask{sonic.DiffModified, messagediff.Path(kn[2:]), v})
+		taskMap[name] = append(task, sonic.DiffTask{sonic.DiffModified, elems[2:], u.GetVal()})
+	}
+
+	for _, d := range diff.Delete {
+		elems := d.GetElem()
+		e := elems[0]
+		n := elems[1]
+		switch e.Name {
+		case "optical-modules":
+			taskMap = optDiffTask
+		case "interfaces":
+			taskMap = intfDiffTask
+		case "ports":
+			taskMap = portDiffTask
+		}
+		name := n.Key["name"]
+		task, ok := taskMap[name]
+		if !ok {
+			task = []sonic.DiffTask{}
+		}
+		taskMap[name] = append(task, sonic.DiffTask{sonic.DiffDeleted, elems[2:], nil})
 	}
 
 	for k, v := range optDiffTask {
@@ -1057,20 +1051,20 @@ func commit(commitMessage string, reboot bool) error {
 	if reboot {
 		return rebootSystem(current)
 	}
-	diff, equal := messagediff.DeepDiff(s, t)
-	if !equal {
-		reboot, err = handleDiff(t, s, diff)
-		if err != nil {
-			return err
-		}
-		if reboot {
-			return rebootSystem(current)
-		}
-	} else {
-		fmt.Println("no diff")
-	}
-	return nil
 
+	opt := &ygot.DiffPathOpt{
+		MapToSinglePath: true,
+	}
+
+	diff, err := ygot.Diff(s, t, opt)
+	if err != nil {
+		return err
+	}
+	reboot, err = handleDiff(t, s, diff)
+	if reboot {
+		return rebootSystem(current)
+	}
+	return err
 }
 
 func NewCommitCmd() *cobra.Command {

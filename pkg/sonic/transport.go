@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
+
 	"github.com/openconfig/ygot/ygot"
 
 	"github.com/osrg/oopt/pkg/model"
@@ -37,55 +39,50 @@ func HandleOptDiff(name string, task []DiffTask) error {
 
 	for _, t := range task {
 		switch path := t.Path.String(); path {
-		case ".OpticalModuleFrequency":
-			freq := t.Value.(*model.PacketTransponder_OpticalModule_OpticalModuleFrequency)
-			grid := gridTypeToInt(freq.Grid)
+		case "optical-module-frequency.grid":
+			var grid int
+			e := model.ΛEnum["E_PacketTransport_FrequencyGridType"]
+			switch t.Value.Value.(*gnmipb.TypedValue_StringVal).StringVal {
+			case e[int64(model.PacketTransport_FrequencyGridType_GRID_100GHZ)].Name:
+				grid = 100
+			case e[int64(model.PacketTransport_FrequencyGridType_GRID_50GHZ)].Name:
+				grid = 50
+			case e[int64(model.PacketTransport_FrequencyGridType_GRID_33GHZ)].Name:
+				grid = 33
+			case e[int64(model.PacketTransport_FrequencyGridType_GRID_25GHZ)].Name:
+				grid = 25
+			}
 			entry["rx-frequency-grid"] = grid
 			entry["tx-frequency-grid"] = grid
-			ch := *freq.Channel
+		case "optical-module-frequency.channel":
+			ch := t.Value.Value.(*gnmipb.TypedValue_UintVal).UintVal
 			entry["rx-frequency-ch"] = ch
 			entry["tx-frequency-ch"] = ch
-		case ".OpticalModuleFrequency.Grid":
-			grid := gridTypeToInt(t.Value.(model.E_PacketTransport_FrequencyGridType))
-			entry["rx-frequency-grid"] = grid
-			entry["tx-frequency-grid"] = grid
-		case ".OpticalModuleFrequency.Channel":
-			ch := t.Value.(uint8)
-			entry["rx-frequency-ch"] = ch
-			entry["tx-frequency-ch"] = ch
-		case ".BerInterval":
-			interval, ok := t.Value.(uint32)
-			if !ok {
-				interval = *(t.Value.(*uint32))
-			}
-			entry["ber-interval"] = interval
-		case ".Prbs":
-			prbs, ok := t.Value.(bool)
-			if !ok {
-				prbs = *(t.Value.(*bool))
-			}
+		case "ber-interval":
+			interval := t.Value.Value.(*gnmipb.TypedValue_UintVal).UintVal
+			entry[path] = interval
+		case "prbs":
+			prbs := t.Value.Value.(*gnmipb.TypedValue_BoolVal).BoolVal
 			if prbs {
-				entry["prbs"] = "on"
+				entry[path] = "on"
 			} else {
-				entry["prbs"] = "off"
+				entry[path] = "off"
 			}
-		case ".Losi":
-			losi, ok := t.Value.(bool)
-			if !ok {
-				losi = *(t.Value.(*bool))
-			}
+		case "losi":
+			losi := t.Value.Value.(*gnmipb.TypedValue_BoolVal).BoolVal
 			if losi {
-				entry["losi"] = "on"
+				entry[path] = "on"
 			} else {
-				entry["losi"] = "off"
+				entry[path] = "off"
 			}
-		case ".ModulationType":
-			mod := t.Value.(model.E_PacketTransport_OpticalModulationType)
+		case "modulation-type":
+			mod := t.Value.Value.(*gnmipb.TypedValue_StringVal).StringVal
+			e := model.ΛEnum["E_PacketTransport_OpticalModulationType"]
 			switch mod {
-			case model.PacketTransport_OpticalModulationType_DP_QPSK:
-				entry["modulation-format"] = "dp-qpsk"
-			case model.PacketTransport_OpticalModulationType_DP_16QAM:
-				entry["modulation-format"] = "dp-16qam"
+			case e[int64(model.PacketTransport_OpticalModulationType_DP_QPSK)].Name:
+				entry[path] = "dp-qpsk"
+			case e[int64(model.PacketTransport_OpticalModulationType_DP_16QAM)].Name:
+				entry[path] = "dp-16qam"
 			}
 		default:
 			fmt.Println("unhandled task:", path)

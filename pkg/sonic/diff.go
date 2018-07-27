@@ -1,10 +1,25 @@
 package sonic
 
 import (
-	"github.com/d4l3k/messagediff"
+	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
+	"strings"
 )
 
 type DiffType int
+
+type PathElems []*gnmipb.PathElem
+
+func (m PathElems) String() string {
+	p := []*gnmipb.PathElem(m)
+	ss := make([]string, 0, len(p))
+	for _, e := range p {
+		n := e.GetName()
+		if n != "config" {
+			ss = append(ss, n)
+		}
+	}
+	return strings.Join(ss, ".")
+}
 
 const (
 	DiffAdded DiffType = iota
@@ -14,6 +29,6 @@ const (
 
 type DiffTask struct {
 	Type  DiffType
-	Path  messagediff.Path
-	Value interface{}
+	Path  PathElems
+	Value *gnmipb.TypedValue
 }
