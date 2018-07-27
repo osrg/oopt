@@ -6,10 +6,6 @@ module packet-transport {
     import openconfig-terminal-device { prefix oc-opt-term; }
     import openconfig-platform-port { prefix oc-port; }
     import openconfig-interfaces { prefix oc-if; }
-    import org-openroadm-common-types {
-      prefix org-openroadm-common-types;
-      revision-date 2017-12-15;
-    }
 
     typedef frequency-grid-type {
         type enumeration {
@@ -112,38 +108,6 @@ module packet-transport {
                 uses optical-module-connection-config;
             }
         }
-    }
-
-    grouping och-attributes {
-      description
-        "Optical Channel attributes";
-      leaf rate {
-        type identityref {
-          base org-openroadm-common-types:och-rate-identity;
-        }
-        description
-          "rate";
-      }
-      leaf frequency {
-        type org-openroadm-common-types:frequency-THz;
-        config true;
-        description
-          "Center Frequency in THz.";
-      }
-      leaf width {
-        type org-openroadm-common-types:frequency-GHz;
-        config false;
-        description
-          "Frequency width in GHz.";
-      }
-      leaf modulation-format {
-        type org-openroadm-common-types:modulation-format;
-      }
-      leaf transmit-power {
-        type org-openroadm-common-types:power-dBm;
-        description
-          "The target transmit power for this channel. When set, the xponder will work to ensure that port-current-power reaches this level. Applicable only to channel on top of xpdr-network port";
-      }
     }
 
     grouping optical-module-frequency-config {
