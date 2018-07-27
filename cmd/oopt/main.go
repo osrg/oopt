@@ -42,6 +42,7 @@ import (
 
 var current *model.PacketTransponder
 var virtual bool
+var dry bool
 
 const (
 	CONFIG_FILE = "config.json"
@@ -176,29 +177,32 @@ func getSignature() *object.Signature {
 func handleDiff(newConfig, oldConfig *model.PacketTransponder, diff *messagediff.Diff) (bool, error) {
 	rebootOFDPA := false
 
-	//	f := func(m map[*messagediff.Path]interface{}) {
-	//		for k, v := range m {
-	//			fmt.Println(k, v)
-	//			fmt.Printf("key: %p\n", k)
-	//			for _, kn := range []messagediff.PathNode(*k) {
-	//				switch n := kn.(type) {
-	//				case messagediff.StructField:
-	//					fmt.Println("struct:", kn)
-	//				case messagediff.MapKey:
-	//					fmt.Println("mapkey:", n.Key)
-	//				case messagediff.SliceIndex:
-	//					fmt.Println("index:", kn)
-	//				}
-	//			}
-	//		}
-	//	}
-	//
-	//	fmt.Println("--added--")
-	//	f(diff.Added)
-	//	fmt.Println("--removed--")
-	//	f(diff.Removed)
-	//	fmt.Println("--modified--")
-	//	f(diff.Modified)
+	if dry {
+		f := func(m map[*messagediff.Path]interface{}) {
+			for k, v := range m {
+				fmt.Println(k, v)
+				fmt.Printf("key: %p\n", k)
+				for _, kn := range []messagediff.PathNode(*k) {
+					switch n := kn.(type) {
+					case messagediff.StructField:
+						fmt.Println("struct:", kn)
+					case messagediff.MapKey:
+						fmt.Println("mapkey:", n.Key)
+					case messagediff.SliceIndex:
+						fmt.Println("index:", kn)
+					}
+				}
+			}
+		}
+
+		fmt.Println("--added--")
+		f(diff.Added)
+		fmt.Println("--removed--")
+		f(diff.Removed)
+		fmt.Println("--modified--")
+		f(diff.Modified)
+		return
+	}
 
 	optDiffTask := map[string][]sonic.DiffTask{}
 	intfDiffTask := map[string][]sonic.DiffTask{}
@@ -958,6 +962,9 @@ func NewOpticalModuleCmd() *cobra.Command {
 }
 
 func rebootSystem(config *model.PacketTransponder) error {
+	if dry {
+		return nil
+	}
 	log.Println("restarting redis pod")
 	err := RestartRedis()
 	if err != nil {
@@ -1243,7 +1250,8 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(initCmd, dumpCmd, portCmd, interfaceCmd, opticalModuleCmd, commitCmd, rollbackCmd, rebootCmd, stopCmd, diffCmd, statusCmd)
 	flags := rootCmd.PersistentFlags()
 	flags.BoolVarP(&virtual, "virtual", "v", false, "virtual env")
-	flags.StringVarP(&gitDir, "git-dir", "d", "/etc/oopt", "directory of git repo")
+	flags.BoolVarP(&dry, "dry", "d", false, "dry run")
+	flags.StringVarP(&gitDir, "git-dir", "c", "/etc/oopt", "directory of git repo")
 	viper.BindPFlag("git_dir", flags.Lookup("git-dir"))
 	return rootCmd
 }
