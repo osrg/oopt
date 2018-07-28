@@ -2,14 +2,6 @@
 
 
 [[projects]]
-  digest = "1:e76640c183e487305c34442d248cf5c4bdeebee498b4ffe891bba0937eab340a"
-  name = "github.com/d4l3k/messagediff"
-  packages = ["."]
-  pruneopts = ""
-  revision = "29f32d820d112dbd66e58492a6ffb7cc3106312b"
-  version = "v1.2.1"
-
-[[projects]]
   digest = "1:ba7c75e38d81b9cf3e8601c081567be3b71bccca8c11aee5de98871360aa4d7b"
   name = "github.com/emirpasic/gods"
   packages = [
@@ -176,7 +168,7 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:9df51af26a67bb826c3a78cd19e0fdc3244d7d47d4aed9b929f86dd5813071d0"
+  digest = "1:5b1dfe2fb8a2488aefa9948c75512906518428857eef43bcb360ad16f56be6c2"
   name = "github.com/openconfig/ygot"
   packages = [
     "util",
@@ -184,7 +176,7 @@
     "ytypes",
   ]
   pruneopts = ""
-  revision = "73127b61d5b493aed4da081b1eb0753a2d8b677b"
+  revision = "9e7de08b58eb9b098835e2bd656b57af28412d24"
 
 [[projects]]
   digest = "1:049b5bee78dfdc9628ee0e557219c41f683e5b06c5a5f20eaba0105ccc586689"
@@ -326,14 +318,14 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:f389727354eee5ad62a6c16c749d9f0f417358e88d41733ec969f9d4250cfd7f"
+  digest = "1:dd631ee90bd2e7aa16b6e094217d77a797684b52811374c948c695cbb46b5bbb"
   name = "golang.org/x/sys"
   packages = [
     "unix",
     "windows",
   ]
   pruneopts = ""
-  revision = "10b189e7aa37dd026e4c1c16d84c6515a393f8ed"
+  revision = "bd9dbc187b6e1dacfdd2722a87e83093c2d7bd6e"
 
 [[projects]]
   digest = "1:5acd3512b047305d49e8763eef7ba423901e85d5dd2fd1e71778a0ea8de10bd4"
@@ -483,8 +475,8 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
-    "github.com/d4l3k/messagediff",
     "github.com/go-redis/redis",
+    "github.com/openconfig/gnmi/proto/gnmi",
     "github.com/openconfig/goyang/pkg/yang",
     "github.com/openconfig/ygot/ygot",
     "github.com/openconfig/ygot/ytypes",
