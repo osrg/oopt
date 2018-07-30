@@ -70,9 +70,14 @@ func HandleInterfaceDiff(newConfig, oldConfig *model.PacketTransponder, name str
 		case "optical-module-connection.id":
 			modOpt = true
 			modEther = true
+		case "mtu", "name":
 		default:
 			fmt.Println("unhandled task:", path)
 		}
+	}
+
+	if i := newConfig.Interface[name]; i == nil || i.OpticalModuleConnection == nil {
+		return nil
 	}
 
 	client, err := NewSONiCDBClient("unix", DEFAULT_REDIS_UNIX_SOCKET, CONFIG_DB)
@@ -83,12 +88,18 @@ func HandleInterfaceDiff(newConfig, oldConfig *model.PacketTransponder, name str
 	// get current vlan
 	var oldVlanName string
 	var oldVlan map[string]interface{}
-	if c := oldConfig.Interface[name].OpticalModuleConnection; c != nil && c.Id != nil {
-		oldVid := *oldConfig.Interface[name].OpticalModuleConnection.Id
-		oldVlanName = fmt.Sprintf("Vlan%d", oldVid)
-		oldVlan, err = client.GetEntry(VLAN_TABLE, oldVlanName)
-		if err != nil {
-			return err
+	var oldOptName string
+	if i := oldConfig.Interface[name]; i != nil {
+		if c := i.OpticalModuleConnection; c != nil && c.Id != nil {
+			oldVid := *c.Id
+			oldVlanName = fmt.Sprintf("Vlan%d", oldVid)
+			oldVlan, err = client.GetEntry(VLAN_TABLE, oldVlanName)
+			if err != nil {
+				return err
+			}
+			if c.OpticalModule != nil {
+				oldOptName, _ = OptEthernetName(c.OpticalModule)
+			}
 		}
 	}
 
@@ -143,11 +154,6 @@ func HandleInterfaceDiff(newConfig, oldConfig *model.PacketTransponder, name str
 		if err != nil {
 			fmt.Printf("incomplete optical module connection configuration for %s\n", name)
 		}
-	}
-
-	var oldOptName string
-	if m := oldConfig.Interface[name].OpticalModuleConnection; m != nil && m.OpticalModule != nil {
-		oldOptName, _ = OptEthernetName(m.OpticalModule)
 	}
 
 	if optName == "" {

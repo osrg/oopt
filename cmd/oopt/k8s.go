@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/viper"
 	"text/template"
@@ -15,8 +16,13 @@ const (
 kind: ConfigMap
 data:
 {{- range $key, $value := .Config }}
-  {{ $key }}: '{{ $value }}'
+  {{ $key }}: |
+{{- $lines := split $value }}
+{{- range $lines }}
+    {{. -}}
 {{ end -}}
+{{ end }}
+
 metadata:
   name: {{ .Name }}
 `
@@ -24,21 +30,25 @@ metadata:
 
 func createConfigMap(name string, config map[string]string) error {
 	filename := fmt.Sprintf("%s/%s", viper.GetString("git_dir"), fmt.Sprintf("%s.yml", name))
-	if _, err := os.Stat(filename); err != nil {
-		f, err := os.Create(filename)
-		defer f.Close()
-		if err != nil {
-			return err
-		}
-		t := template.Must(template.New("sonic-config.yml.tmpl").Parse(CONFIG_MAP_TEMPLATE))
-		m := struct {
-			Name   string
-			Config map[string]string
-		}{}
-		m.Name = name
-		m.Config = config
-		t.Execute(f, m)
+	f, err := os.Create(filename)
+	defer f.Close()
+	if err != nil {
+		return err
 	}
+	funcMap := template.FuncMap{
+		"split": func(line string) []string {
+			return strings.Split(line, "\n")
+		},
+	}
+	t := template.New("config-map.tmpl").Funcs(funcMap)
+	t = template.Must(t.Parse(CONFIG_MAP_TEMPLATE))
+	m := struct {
+		Name   string
+		Config map[string]string
+	}{}
+	m.Name = name
+	m.Config = config
+	t.Execute(f, m)
 	var cmd *exec.Cmd
 	if isConfigMapExists(name) {
 		cmd = exec.Command("kubectl", "replace", "-f", filename)
@@ -47,7 +57,7 @@ func createConfigMap(name string, config map[string]string) error {
 	}
 	output, err := cmd.Output()
 	if err != nil {
-		fmt.Println(output)
+		fmt.Println("failed to create config-map:", output)
 	}
 	return err
 }
