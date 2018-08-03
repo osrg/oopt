@@ -239,16 +239,36 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 			ch = int(*v.OpticalModuleFrequency.Channel)
 			grid = gridTypeToInt(v.OpticalModuleFrequency.Grid)
 		}
+		losi := "off"
+		if v.Losi != nil {
+			if *v.Losi {
+				losi = "on"
+			}
+		}
+		prbs := "off"
+		if v.Prbs != nil {
+			if *v.Prbs {
+				prbs = "on"
+			}
+		}
+		mod := "dp-16qam"
+		if v.ModulationType == model.PacketTransport_OpticalModulationType_DP_QPSK {
+			mod = "dp-qpsk"
+		}
+		ber := 100
+		if v.BerInterval != nil {
+			ber = int(*v.BerInterval)
+		}
 		entry := map[string]interface{}{
 			"index":             index - 1,
 			"rx-frequency-ch":   ch,
 			"rx-frequency-grid": grid,
 			"tx-frequency-ch":   ch,
 			"tx-frequency-grid": grid,
-			"losi":              "off",
-			"prbs":              "on",
-			"modulation-type":   "dp-16qam",
-			"ber-interval":      100,
+			"losi":              losi,
+			"prbs":              prbs,
+			"modulation-type":   mod,
+			"ber-interval":      ber,
 		}
 		err = client.SetEntry(CONFIG_TABLE, k, entry)
 		if err != nil {
