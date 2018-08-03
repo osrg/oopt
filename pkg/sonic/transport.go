@@ -247,7 +247,7 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 			"tx-frequency-grid": grid,
 			"losi":              "off",
 			"prbs":              "on",
-			"modulation-format": "dp-16qam",
+			"modulation-type":   "dp-16qam",
 			"ber-interval":      100,
 		}
 		err = client.SetEntry(CONFIG_TABLE, k, entry)
