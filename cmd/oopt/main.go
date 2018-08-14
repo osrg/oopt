@@ -796,6 +796,24 @@ func NewOpticalModuleCmd() *cobra.Command {
 		},
 	}
 
+	enableCmd := &cobra.Command{
+		Use:  "enable",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			current.OpticalModule[name].Enabled = ygot.Bool(true)
+			return nil
+		},
+	}
+
+	disableCmd := &cobra.Command{
+		Use:  "disable",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			current.OpticalModule[name].Enabled = ygot.Bool(false)
+			return nil
+		},
+	}
+
 	prbsCmd := &cobra.Command{
 		Use:       "prbs",
 		ValidArgs: []string{"on", "off"},
@@ -934,7 +952,7 @@ func NewOpticalModuleCmd() *cobra.Command {
 			return nil
 		},
 	}
-	opticalModuleCmdImpl.AddCommand(frequencyCmd, berIntervalCmd, prbsCmd, losiCmd, modCmd, stateCmd, descriptionCmd)
+	opticalModuleCmdImpl.AddCommand(frequencyCmd, berIntervalCmd, prbsCmd, losiCmd, modCmd, stateCmd, descriptionCmd, enableCmd, disableCmd)
 
 	opticalModuleCmd := &cobra.Command{
 		Use:               "optical-module <module-name>",

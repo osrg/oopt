@@ -75,6 +75,13 @@ func HandleOptDiff(name string, task []DiffTask) error {
 			} else {
 				entry[path] = "off"
 			}
+		case "enabled":
+			enabled := t.Value.Value.(*gnmipb.TypedValue_BoolVal).BoolVal
+			if enabled {
+				entry[path] = "on"
+			} else {
+				entry[path] = "off"
+			}
 		case "modulation-type":
 			mod := t.Value.Value.(*gnmipb.TypedValue_StringVal).StringVal
 			e := model.ΛEnum["E_PacketTransport_OpticalModulationType"]
@@ -259,6 +266,10 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 		if v.BerInterval != nil {
 			ber = int(*v.BerInterval)
 		}
+		enabled := "on"
+		if v.Enabled != nil && !(*v.Enabled) {
+			enabled = "off"
+		}
 		entry := map[string]interface{}{
 			"index":             index - 1,
 			"rx-frequency-ch":   ch,
@@ -269,6 +280,7 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 			"prbs":              prbs,
 			"modulation-type":   mod,
 			"ber-interval":      ber,
+			"enabled":           enabled,
 		}
 		err = client.SetEntry(CONFIG_TABLE, k, entry)
 		if err != nil {

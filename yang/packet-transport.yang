@@ -128,6 +128,10 @@ module packet-transport {
             type string;
         }
 
+        leaf enabled {
+            type boolean;
+        }
+
         leaf modulation-type {
             type optical-modulation-type;
         }
