@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	CONFIG_TABLE = "MODULE_CONFIG_TABLE"
-	STATE_TABLE  = "MODULE_STATE_TABLE"
+	CONFIG_TABLE      = "MODULE_CONFIG_TABLE"
+	STATE_TABLE       = "MODULE_STATE_TABLE"
+	MAPPING_TABLE     = "MODULE_MAPPING"
+	NETIF_STATE_TABLE = "NETIF_STATE_TABLE"
 )
 
 func gridTypeToInt(t model.E_PacketTransport_FrequencyGridType) int {
@@ -117,7 +119,18 @@ func FillTransportState(name string, t *model.PacketTransponder_OpticalModule) e
 		return err
 	}
 
-	entry, err := client.GetEntry(STATE_TABLE, name)
+	entry, err := client.GetEntry(MAPPING_TABLE, name)
+	if err != nil {
+		return err
+	}
+
+	s, ok := entry["netif"]
+	if !ok {
+		return nil
+	}
+
+	nid := s.([]string)[0]
+	entry, err = client.GetEntry(NETIF_STATE_TABLE, nid)
 	if err != nil {
 		return err
 	}
@@ -126,7 +139,7 @@ func FillTransportState(name string, t *model.PacketTransponder_OpticalModule) e
 		rms := s.(string)
 		elems := strings.Split(rms, ",")
 		if len(elems) != 4 {
-			return fmt.Errorf("wrong rms format: %s", rms)
+			elems = []string{"0", "0", "0", "0"}
 		}
 		t.OpticalModuleRms = &model.PacketTransponder_OpticalModule_OpticalModuleRms{}
 		trim := func(elem string) (*uint16, error) {
@@ -141,7 +154,7 @@ func FillTransportState(name string, t *model.PacketTransponder_OpticalModule) e
 		} else {
 			t.OpticalModuleRms.Xi = xi
 		}
-		if xq, err := trim(elems[0]); err != nil {
+		if xq, err := trim(elems[1]); err != nil {
 			return err
 		} else {
 			t.OpticalModuleRms.Xq = xq
@@ -197,28 +210,22 @@ func FillTransportState(name string, t *model.PacketTransponder_OpticalModule) e
 		return t.ChannelStats[n]
 	}
 
-	if s, ok := entry["hd-fec-ber-ch0"]; ok {
-		createCh("A").HdFecBer = ygot.String(s.(string))
+	if s, ok := entry["hd-fec-ber"]; ok {
+		e := s.([]string)
+		createCh("A").HdFecBer = ygot.String(e[0])
+		createCh("B").HdFecBer = ygot.String(e[1])
 	}
 
-	if s, ok := entry["sd-fec-ber-ch0"]; ok {
-		createCh("A").SdFecBer = ygot.String(s.(string))
+	if s, ok := entry["sd-fec-ber"]; ok {
+		e := s.([]string)
+		createCh("A").SdFecBer = ygot.String(e[0])
+		createCh("B").SdFecBer = ygot.String(e[1])
 	}
 
-	if s, ok := entry["post-fec-ber-ch0"]; ok {
-		createCh("A").PostFecBer = ygot.String(s.(string))
-	}
-
-	if s, ok := entry["hd-fec-ber-ch1"]; ok {
-		createCh("B").HdFecBer = ygot.String(s.(string))
-	}
-
-	if s, ok := entry["sd-fec-ber-ch1"]; ok {
-		createCh("B").SdFecBer = ygot.String(s.(string))
-	}
-
-	if s, ok := entry["post-fec-ber-ch1"]; ok {
-		createCh("B").PostFecBer = ygot.String(s.(string))
+	if s, ok := entry["post-fec-ber"]; ok {
+		e := s.([]string)
+		createCh("A").PostFecBer = ygot.String(e[0])
+		createCh("B").PostFecBer = ygot.String(e[1])
 	}
 
 	return nil
