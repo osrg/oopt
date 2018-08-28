@@ -1,6 +1,6 @@
 [submodule "submodules/public"]
 	path = submodules/public
-	url = git@github.com:openconfig/public.git
+	url = https://github.com/openconfig/public.git
 [submodule "submodules/pyang"]
 	path = submodules/pyang
-	url = git@github.com:mbj4668/pyang.git
+	url = https://github.com/mbj4668/pyang.git
