@@ -78,8 +78,6 @@ done']
     volumeMounts:
     - mountPath: /var/run/redis/
       name: redis
-    securityContext:
-      privileged: true
   - name: init-configdb
     image: {{ .Image }}
     imagePullPolicy: Never
@@ -89,8 +87,13 @@ done']
       name: redis
     - mountPath: /root/config
       name: sonic-config
-    securityContext:
-      privileged: true
+  - name: init-configdb-done
+    image: redis
+    imagePullPolicy: Never
+    command: ['redis-cli', '-s', '/var/run/redis/redis.sock', '-n', '4', 'SET', 'CONFIG_DB_INITIALIZED', '1']
+    volumeMounts:
+    - mountPath: /var/run/redis/
+      name: redis
   containers:
   - name: syncd
     image: {{ .Image }}
