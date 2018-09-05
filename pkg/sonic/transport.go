@@ -110,6 +110,35 @@ func HandleOptDiff(name string, task []DiffTask) error {
 	return client.ModEntry(CONFIG_TABLE, name, entry)
 }
 
+func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule) error {
+	if t.OpticalModuleFrequency == nil {
+		t.OpticalModuleFrequency = &model.PacketTransponder_OpticalModule_OpticalModuleFrequency{}
+	}
+	if t.OpticalModuleFrequency.Channel == nil {
+		ch := uint8(1)
+		t.OpticalModuleFrequency.Channel = &ch
+	}
+	if t.OpticalModuleFrequency.Grid == model.PacketTransport_FrequencyGridType_UNSET {
+		t.OpticalModuleFrequency.Grid = model.PacketTransport_FrequencyGridType_GRID_50GHZ
+	}
+	if t.Losi == nil {
+		t.Losi = ygot.Bool(false)
+	}
+	if t.Prbs == nil {
+		t.Prbs = ygot.Bool(false)
+	}
+	if t.ModulationType == model.PacketTransport_OpticalModulationType_UNSET {
+		t.ModulationType = model.PacketTransport_OpticalModulationType_DP_QPSK
+	}
+	if t.BerInterval == nil {
+		t.BerInterval = ygot.Uint32(100)
+	}
+	if t.Enabled == nil {
+		t.Enabled = ygot.Bool(true)
+	}
+	return nil
+}
+
 func FillTransportState(name string, t *model.PacketTransponder_OpticalModule) error {
 	if t == nil {
 		return fmt.Errorf("model is nil")
@@ -245,38 +274,34 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 		if err != nil {
 			return err
 		}
-		ch := 1
-		grid := 50
-		// TODO adhoc default value handling
-		// implement more general mechanism
-		if v.OpticalModuleFrequency != nil {
-			ch = int(*v.OpticalModuleFrequency.Channel)
-			grid = gridTypeToInt(v.OpticalModuleFrequency.Grid)
+		if err = FillTransportDefaultConfig(v); err != nil {
+			return err
 		}
+
+		ch := int(*v.OpticalModuleFrequency.Channel)
+		grid := gridTypeToInt(v.OpticalModuleFrequency.Grid)
+		ber := int(*v.BerInterval)
+
 		losi := "off"
-		if v.Losi != nil {
-			if *v.Losi {
-				losi = "on"
-			}
+		if *v.Losi {
+			losi = "on"
 		}
+
 		prbs := "off"
-		if v.Prbs != nil {
-			if *v.Prbs {
-				prbs = "on"
-			}
+		if *v.Prbs {
+			prbs = "on"
 		}
+
 		mod := "dp-16qam"
 		if v.ModulationType == model.PacketTransport_OpticalModulationType_DP_QPSK {
 			mod = "dp-qpsk"
 		}
-		ber := 100
-		if v.BerInterval != nil {
-			ber = int(*v.BerInterval)
-		}
+
 		enabled := "on"
-		if v.Enabled != nil && !(*v.Enabled) {
+		if !(*v.Enabled) {
 			enabled = "off"
 		}
+
 		entry := map[string]interface{}{
 			"index":             index - 1,
 			"rx-frequency-ch":   ch,

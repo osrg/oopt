@@ -67,6 +67,15 @@ func RemoveContents(dir string) error {
 	return nil
 }
 
+func fillDefaultValues(m *model.PacketTransponder) error {
+	for _, o := range m.OpticalModule {
+		if err := sonic.FillTransportDefaultConfig(o); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func persistentPreRunE(cmd *cobra.Command, args []string) error {
 	data, err := ioutil.ReadFile(fmt.Sprintf("%s/%s", viper.GetString("git_dir"), CONFIG_FILE))
 	if err != nil {
@@ -361,25 +370,35 @@ func NewInitCmd() *cobra.Command {
 }
 
 func NewDumpCmd() *cobra.Command {
-	return &cobra.Command{
+	var verbose bool
+	cmd := &cobra.Command{
 		Use: "dump",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := ioutil.ReadFile(fmt.Sprintf("%s/%s", viper.GetString("git_dir"), CONFIG_FILE))
 			if err != nil {
-				log.Fatalf("open: %v", err)
+				return err
 			}
 			t := &model.PacketTransponder{}
 			err = model.Unmarshal(data, t)
 			if err != nil {
-				log.Fatalf("unmarshal: %v", err)
+				return err
+			}
+			if verbose {
+				err = fillDefaultValues(t)
+				if err != nil {
+					return err
+				}
 			}
 			json, err := ygot.EmitJSON(t, nil)
 			if err != nil {
-				log.Fatalf("emit: %v", err)
+				return err
 			}
 			fmt.Println(json)
+			return nil
 		},
 	}
+	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose")
+	return cmd
 }
 
 func NewPortCmd() *cobra.Command {
@@ -709,6 +728,7 @@ func NewInterfaceCmd() *cobra.Command {
 
 func NewOpticalModuleCmd() *cobra.Command {
 	var name string
+	var verbose bool
 
 	grids := make([]string, 0, len(model.ΛEnum["E_PacketTransport_FrequencyGridType"]))
 
@@ -944,13 +964,24 @@ func NewOpticalModuleCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			json, err := ygot.EmitJSON(current.OpticalModule[name], nil)
+			o, err := ygot.DeepCopy(current.OpticalModule[name])
+			if err != nil {
+				return err
+			}
+			module := o.(*model.PacketTransponder_OpticalModule)
+			if verbose {
+				if err := sonic.FillTransportDefaultConfig(module); err != nil {
+					return err
+				}
+			}
+			json, err := ygot.EmitJSON(module, nil)
 			if err != nil {
 				return err
 			}
 			fmt.Println(json)
 			return nil
 		},
+		PersistentPostRunE: persistentPostRunE,
 	}
 	opticalModuleCmdImpl.AddCommand(frequencyCmd, berIntervalCmd, prbsCmd, losiCmd, modCmd, stateCmd, descriptionCmd, enableCmd, disableCmd)
 
@@ -959,6 +990,11 @@ func NewOpticalModuleCmd() *cobra.Command {
 		PersistentPreRunE: persistentPreRunE,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, module := range current.OpticalModule {
+				if verbose {
+					if err := sonic.FillTransportDefaultConfig(module); err != nil {
+						return err
+					}
+				}
 				json, err := ygot.EmitJSON(module, nil)
 				if err != nil {
 					return err
@@ -967,9 +1003,9 @@ func NewOpticalModuleCmd() *cobra.Command {
 			}
 			return nil
 		},
-		PersistentPostRunE: persistentPostRunE,
 	}
 	opticalModuleCmd.AddCommand(opticalModuleCmdImpl)
+	opticalModuleCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose")
 	return opticalModuleCmd
 }
 
@@ -1261,7 +1297,7 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(initCmd, dumpCmd, portCmd, interfaceCmd, opticalModuleCmd, commitCmd, rollbackCmd, rebootCmd, stopCmd, diffCmd, statusCmd)
 	flags := rootCmd.PersistentFlags()
-	flags.BoolVarP(&virtual, "virtual", "v", false, "virtual env")
+	flags.BoolVarP(&virtual, "virtual", "", false, "virtual env")
 	flags.BoolVarP(&dry, "dry", "d", false, "dry run")
 	flags.StringVarP(&gitDir, "git-dir", "c", "/etc/oopt", "directory of git repo")
 	viper.BindPFlag("git_dir", flags.Lookup("git-dir"))
