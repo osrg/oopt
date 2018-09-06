@@ -905,18 +905,25 @@ func NewOpticalModuleCmd() *cobra.Command {
 		Use:  "state",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := sonic.FillTransportState(name, current.OpticalModule[name])
+			o, err := ygot.DeepCopy(current.OpticalModule[name])
 			if err != nil {
 				return err
 			}
-			json, err := ygot.EmitJSON(current.OpticalModule[name], nil)
+			module := o.(*model.PacketTransponder_OpticalModule)
+			if verbose {
+				if err := sonic.FillTransportDefaultConfig(module); err != nil {
+					return err
+				}
+			}
+			err = sonic.FillTransportState(name, module)
+			if err != nil {
+				return err
+			}
+			json, err := ygot.EmitJSON(module, nil)
 			if err != nil {
 				return err
 			}
 			fmt.Println(json)
-			return nil
-		},
-		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
 			return nil
 		},
 	}
