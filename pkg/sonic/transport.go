@@ -304,8 +304,6 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 
 		entry := map[string]interface{}{
 			"index":             index - 1,
-			"rx-frequency-ch":   ch,
-			"rx-frequency-grid": grid,
 			"tx-frequency-ch":   ch,
 			"tx-frequency-grid": grid,
 			"losi":              losi,
