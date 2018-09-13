@@ -172,6 +172,9 @@ spec:
   - name: redis
     hostPath:
       path: /var/run/redis
+  - name: mux
+    hostPath:
+      path: /etc/tai/mux
   containers:
   - name: transyncd
     image: {{ .Image }}
@@ -179,6 +182,8 @@ spec:
     volumeMounts:
     - mountPath: /var/run/redis/
       name: redis
+    - mountPath: /etc/tai/mux/
+      name: mux
     securityContext:
       privileged: true
     command:
