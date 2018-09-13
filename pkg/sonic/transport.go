@@ -54,11 +54,9 @@ func HandleOptDiff(name string, task []DiffTask) error {
 			case e[int64(model.PacketTransport_FrequencyGridType_GRID_25GHZ)].Name:
 				grid = 25
 			}
-			entry["rx-frequency-grid"] = grid
 			entry["tx-frequency-grid"] = grid
 		case "optical-module-frequency.channel":
 			ch := t.Value.Value.(*gnmipb.TypedValue_UintVal).UintVal
-			entry["rx-frequency-ch"] = ch
 			entry["tx-frequency-ch"] = ch
 		case "ber-interval":
 			interval := t.Value.Value.(*gnmipb.TypedValue_UintVal).UintVal
