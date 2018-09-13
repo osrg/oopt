@@ -128,7 +128,7 @@ func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule) error 
 		t.Prbs = ygot.Bool(false)
 	}
 	if t.ModulationType == model.PacketTransport_OpticalModulationType_UNSET {
-		t.ModulationType = model.PacketTransport_OpticalModulationType_DP_QPSK
+		t.ModulationType = model.PacketTransport_OpticalModulationType_DP_16QAM
 	}
 	if t.BerInterval == nil {
 		t.BerInterval = ygot.Uint32(100)
