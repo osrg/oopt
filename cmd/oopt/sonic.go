@@ -36,6 +36,7 @@ kind: Pod
 metadata:
   name: redis
 spec:
+  hostNetwork: true
   volumes:
   - name: redis
     hostPath:
