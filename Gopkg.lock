@@ -66,6 +66,17 @@
 
 [[projects]]
   branch = "master"
+  digest = "1:081255be6c9564f0b577cbcc9fc57afec5ad5eac5510eca8877df81be92d9dda"
+  name = "github.com/google/gnxi"
+  packages = [
+    "utils",
+    "utils/xpath",
+  ]
+  pruneopts = ""
+  revision = "29c5f50a5dc6f03300cbbfaab756eb1135afd5cf"
+
+[[projects]]
+  branch = "master"
   digest = "1:9b7c5846d70f425d7fe279595e32a20994c6075e87be03b5c367ed07280877c5"
   name = "github.com/hashicorp/hcl"
   packages = [
@@ -171,6 +182,7 @@
   digest = "1:5b1dfe2fb8a2488aefa9948c75512906518428857eef43bcb360ad16f56be6c2"
   name = "github.com/openconfig/ygot"
   packages = [
+    "experimental/ygotutils",
     "util",
     "ygot",
     "ytypes",
@@ -354,7 +366,10 @@
   branch = "master"
   digest = "1:282b4a7158a161508e442b0a1c24fcf771c66ada2c93921f4b8ddc6b0a5e0c9b"
   name = "google.golang.org/genproto"
-  packages = ["googleapis/rpc/status"]
+  packages = [
+    "googleapis/rpc/code",
+    "googleapis/rpc/status",
+  ]
   pruneopts = ""
   revision = "2a72893556e4d1f6c795a4c039314c9fa751eedb"
 
@@ -380,6 +395,8 @@
     "metadata",
     "naming",
     "peer",
+    "reflection",
+    "reflection/grpc_reflection_v1alpha",
     "resolver",
     "resolver/dns",
     "resolver/passthrough",
@@ -476,12 +493,25 @@
   analyzer-version = 1
   input-imports = [
     "github.com/go-redis/redis",
+    "github.com/golang/glog",
+    "github.com/golang/protobuf/proto",
+    "github.com/golang/protobuf/protoc-gen-go/descriptor",
+    "github.com/google/gnxi/utils",
+    "github.com/google/gnxi/utils/xpath",
     "github.com/openconfig/gnmi/proto/gnmi",
+    "github.com/openconfig/gnmi/value",
     "github.com/openconfig/goyang/pkg/yang",
+    "github.com/openconfig/ygot/experimental/ygotutils",
     "github.com/openconfig/ygot/ygot",
     "github.com/openconfig/ygot/ytypes",
     "github.com/spf13/cobra",
     "github.com/spf13/viper",
+    "golang.org/x/net/context",
+    "google.golang.org/genproto/googleapis/rpc/code",
+    "google.golang.org/grpc",
+    "google.golang.org/grpc/codes",
+    "google.golang.org/grpc/reflection",
+    "google.golang.org/grpc/status",
     "gopkg.in/src-d/go-git.v4",
     "gopkg.in/src-d/go-git.v4/plumbing/object",
   ]
