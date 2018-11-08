@@ -15,7 +15,7 @@ import (
 
 var (
 	current *model.PacketTransponder
-	git_dir  = "/etc/oopt"
+	git_dir = "/etc/oopt"
 )
 
 const (
@@ -53,21 +53,17 @@ func main() {
 
 	servermodel := oopt.NewModel(
 		oopt.ModelData,
-		reflect.TypeOf((*model.Device)(nil)),
-		model.SchemaTree["Device"],
+		reflect.TypeOf((*model.PacketTransponder)(nil)),
+		model.SchemaTree["PacketTransponder"],
 		model.Unmarshal,
 		model.ΛEnum,
 	)
 
-	d := &model.Device{
-		PacketTransponder: current,
-	}
-
-	if err = d.Validate(); err != nil {
+	if err = current.Validate(); err != nil {
 		panic(fmt.Sprintf("validation failed: %v", err))
 	}
 
-	json, err := ygot.EmitJSON(d, &ygot.EmitJSONConfig{
+	json, err := ygot.EmitJSON(current, &ygot.EmitJSONConfig{
 		Format: ygot.RFC7951,
 		Indent: "  ",
 		RFC7951Config: &ygot.RFC7951JSONConfig{
