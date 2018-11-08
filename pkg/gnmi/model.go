@@ -1,4 +1,4 @@
-/* 
+/*
 Copyright 2018 Nippon Telegraph and Telephone Corporation
 Copyright 2017 Google Inc.
 
