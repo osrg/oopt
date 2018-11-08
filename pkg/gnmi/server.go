@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +28,11 @@ import (
 	cpb "google.golang.org/genproto/googleapis/rpc/code"
 )
 
+// ConfigCallback is the signature of the function to apply a validated config to the physical device.
+type ConfigCallback func(ygot.ValidatedGoStruct) error
+
 var (
+	pbRootPath         = &pb.Path{}
 	supportedEncodings = []pb.Encoding{pb.Encoding_JSON, pb.Encoding_JSON_IETF}
 	ModelData          = []*pb.ModelData{{
 		Name:         "packet-transport",
@@ -46,10 +51,11 @@ type Server struct {
 	config ygot.ValidatedGoStruct
 	cMu    sync.Mutex
 	model  *Model
+	callback ConfigCallback
 }
 
 // NewServer returns an initialized server.
-func NewServer(model *Model, config []byte, port int64, opts []grpc.ServerOption) (*Server, error) {
+func NewServer(model *Model, config []byte, port int64, callback ConfigCallback, opts []grpc.ServerOption) (*Server, error) {
 	rootStruct, err := model.NewConfigStruct(config)
 	if err != nil {
 		return nil, err
@@ -63,6 +69,7 @@ func NewServer(model *Model, config []byte, port int64, opts []grpc.ServerOption
 		port:   port,
 		config: rootStruct,
 		model:  model,
+		callback: callback,
 	}
 	if srv.port < 0 {
 		srv.port = 0
@@ -94,6 +101,18 @@ func (srv *Server) Address() string {
 // Port returns the port the server is listening to.
 func (srv *Server) Port() int64 {
 	return srv.port
+}
+
+func (srv *Server) toGoStruct(jsonTree map[string]interface{}) (ygot.ValidatedGoStruct, error) {
+	jsonDump, err := json.Marshal(jsonTree)
+	if err != nil {
+		return nil, fmt.Errorf("error in marshaling IETF JSON tree to bytes: %v", err)
+	}
+	goStruct, err := srv.model.NewConfigStruct(jsonDump)
+	if err != nil {
+		return nil, fmt.Errorf("error in creating config struct from IETF JSON data: %v", err)
+	}
+	return goStruct, nil
 }
 
 // getGNMIServiceVersion returns a pointer to the gNMI service version string.
@@ -145,6 +164,107 @@ func isNil(i interface{}) bool {
 	}
 }
 
+
+// deleteKeyedListEntry deletes the keyed list entry from node that matches the
+// path elem. If the entry is the only one in keyed list, deletes the entire
+// list. If the entry is found and deleted, the function returns true. If it is
+// not found, the function returns false.
+func deleteKeyedListEntry(node map[string]interface{}, elem *pb.PathElem) bool {
+	curNode, ok := node[elem.Name]
+	if !ok {
+		return false
+	}
+
+	keyedList, ok := curNode.([]interface{})
+	if !ok {
+		return false
+	}
+	for i, n := range keyedList {
+		m, ok := n.(map[string]interface{})
+		if !ok {
+			fmt.Errorf("expect map[string]interface{} for a keyed list entry, got %T", n)
+			return false
+		}
+		keyMatching := true
+		for k, v := range elem.Key {
+			attrVal, ok := m[k]
+			if !ok {
+				return false
+			}
+			if v != fmt.Sprintf("%v", attrVal) {
+				keyMatching = false
+				break
+			}
+		}
+		if keyMatching {
+			listLen := len(keyedList)
+			if listLen == 1 {
+				delete(node, elem.Name)
+				return true
+			}
+			keyedList[i] = keyedList[listLen-1]
+			node[elem.Name] = keyedList[0 : listLen-1]
+			return true
+		}
+	}
+	return false
+}
+
+// setPathWithAttribute replaces or updates a child node of curNode in the IETF
+// JSON config tree, where the child node is indexed by pathElem with attribute.
+// The function returns grpc status error if unsuccessful.
+func setPathWithAttribute(op pb.UpdateResult_Operation, curNode map[string]interface{}, pathElem *pb.PathElem, nodeVal interface{}) error {
+	nodeValAsTree, ok := nodeVal.(map[string]interface{})
+	if !ok {
+		return status.Errorf(codes.InvalidArgument, "expect nodeVal is a json node of map[string]interface{}, received %T", nodeVal)
+	}
+	m := getKeyedListEntry(curNode, pathElem, true)
+	if m == nil {
+		return status.Errorf(codes.NotFound, "path elem not found: %v", pathElem)
+	}
+	if op == pb.UpdateResult_REPLACE {
+		for k := range m {
+			delete(m, k)
+		}
+	}
+	for attrKey, attrVal := range pathElem.GetKey() {
+		m[attrKey] = attrVal
+		if asNum, err := strconv.ParseFloat(attrVal, 64); err == nil {
+			m[attrKey] = asNum
+		}
+		for k, v := range nodeValAsTree {
+			if k == attrKey && fmt.Sprintf("%v", v) != attrVal {
+				return status.Errorf(codes.InvalidArgument, "invalid config data: %v is a path attribute", k)
+			}
+		}
+	}
+	for k, v := range nodeValAsTree {
+		m[k] = v
+	}
+	return nil
+}
+
+// setPathWithoutAttribute replaces or updates a child node of curNode in the
+// IETF config tree, where the child node is indexed by pathElem without
+// attribute. The function returns grpc status error if unsuccessful.
+func setPathWithoutAttribute(op pb.UpdateResult_Operation, curNode map[string]interface{}, pathElem *pb.PathElem, nodeVal interface{}) error {
+	target, hasElem := curNode[pathElem.Name]
+	nodeValAsTree, nodeValIsTree := nodeVal.(map[string]interface{})
+	if op == pb.UpdateResult_REPLACE || !hasElem || !nodeValIsTree {
+		curNode[pathElem.Name] = nodeVal
+		return nil
+	}
+	targetAsTree, ok := target.(map[string]interface{})
+	if !ok {
+		return status.Errorf(codes.Internal, "error in setting path: expect map[string]interface{} to update, got %T", target)
+	}
+	for k, v := range nodeValAsTree {
+		targetAsTree[k] = v
+	}
+	return nil
+}
+
+
 // checkEncodingAndModel checks whether encoding and models are supported by the server. Return error if anything is unsupported.
 func (srv *Server) checkEncodingAndModel(encoding pb.Encoding, models []*pb.ModelData) error {
 	hasSupportedEncoding := false
@@ -159,6 +279,158 @@ func (srv *Server) checkEncodingAndModel(encoding pb.Encoding, models []*pb.Mode
 	}
 	return nil
 }
+
+// doDelete deletes the path from the json tree if the path exists. If success,
+// it calls the callback function to apply the change to the device hardware.
+func (srv *Server) doDelete(jsonTree map[string]interface{}, prefix, path *pb.Path) (*pb.UpdateResult, error) {
+	var curNode interface{} = jsonTree
+	pathDeleted := false
+	fullPath := gnmiFullPath(prefix, path)
+	schema := srv.model.schemaTreeRoot
+	for i, elem := range fullPath.Elem { // Delete sub-tree or leaf node.
+		node, ok := curNode.(map[string]interface{})
+		if !ok {
+			break
+		}
+
+		// Delete node
+		if i == len(fullPath.Elem)-1 {
+			if elem.GetKey() == nil {
+				delete(node, elem.Name)
+				pathDeleted = true
+				break
+			}
+			pathDeleted = deleteKeyedListEntry(node, elem)
+			break
+		}
+
+		if curNode, schema = getChildNode(node, schema, elem, false); curNode == nil {
+			break
+		}
+	}
+	if reflect.DeepEqual(fullPath, pbRootPath) { // Delete root
+		for k := range jsonTree {
+			delete(jsonTree, k)
+		}
+	}
+
+	// Apply the validated operation to the config tree and device.
+	if pathDeleted {
+		newConfig, err := srv.toGoStruct(jsonTree)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		if srv.callback != nil {
+			if applyErr := srv.callback(newConfig); applyErr != nil {
+				if rollbackErr := srv.callback(srv.config); rollbackErr != nil {
+					return nil, status.Errorf(codes.Internal, "error in rollback the failed operation (%v): %v", applyErr, rollbackErr)
+				}
+				return nil, status.Errorf(codes.Aborted, "error in applying operation to device: %v", applyErr)
+			}
+		}
+	}
+	return &pb.UpdateResult{
+		Path: path,
+		Op:   pb.UpdateResult_DELETE,
+	}, nil
+}
+
+// doReplaceOrUpdate validates the replace or update operation to be applied to
+// the device, modifies the json tree of the config struct, then calls the
+// callback function to apply the operation to the device hardware.
+func (srv *Server) doReplaceOrUpdate(jsonTree map[string]interface{}, op pb.UpdateResult_Operation, prefix, path *pb.Path, val *pb.TypedValue) (*pb.UpdateResult, error) {
+	// Validate the operation.
+	fullPath := gnmiFullPath(prefix, path)
+	emptyNode, stat := ygotutils.NewNode(srv.model.structRootType, fullPath)
+	if stat.GetCode() != int32(cpb.Code_OK) {
+		return nil, status.Errorf(codes.NotFound, "path %v is not found in the config structure: %v", fullPath, stat)
+	}
+	var nodeVal interface{}
+	nodeStruct, ok := emptyNode.(ygot.ValidatedGoStruct)
+	if ok {
+		if err := srv.model.jsonUnmarshaler(val.GetJsonIetfVal(), nodeStruct); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "unmarshaling json data to config struct fails: %v", err)
+		}
+		if err := nodeStruct.Validate(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "config data validation fails: %v", err)
+		}
+		var err error
+		if nodeVal, err = ygot.ConstructIETFJSON(nodeStruct, &ygot.RFC7951JSONConfig{}); err != nil {
+			msg := fmt.Sprintf("error in constructing IETF JSON tree from config struct: %v", err)
+			fmt.Errorf(msg)
+			return nil, status.Error(codes.Internal, msg)
+		}
+	} else {
+		var err error
+		if nodeVal, err = value.ToScalar(val); err != nil {
+			return nil, status.Errorf(codes.Internal, "cannot convert leaf node to scalar type: %v", err)
+		}
+	}
+
+	// Update json tree of the device config.
+	var curNode interface{} = jsonTree
+	schema := srv.model.schemaTreeRoot
+	for i, elem := range fullPath.Elem {
+		switch node := curNode.(type) {
+		case map[string]interface{}:
+			// Set node value.
+			if i == len(fullPath.Elem)-1 {
+				if elem.GetKey() == nil {
+					if grpcStatusError := setPathWithoutAttribute(op, node, elem, nodeVal); grpcStatusError != nil {
+						return nil, grpcStatusError
+					}
+					break
+				}
+				if grpcStatusError := setPathWithAttribute(op, node, elem, nodeVal); grpcStatusError != nil {
+					return nil, grpcStatusError
+				}
+				break
+			}
+
+			if curNode, schema = getChildNode(node, schema, elem, true); curNode == nil {
+				return nil, status.Errorf(codes.NotFound, "path elem not found: %v", elem)
+			}
+		case []interface{}:
+			return nil, status.Errorf(codes.NotFound, "uncompatible path elem: %v", elem)
+		default:
+			return nil, status.Errorf(codes.Internal, "wrong node type: %T", curNode)
+		}
+	}
+	if reflect.DeepEqual(fullPath, pbRootPath) { // Replace/Update root.
+		if op == pb.UpdateResult_UPDATE {
+			return nil, status.Error(codes.Unimplemented, "update the root of config tree is unsupported")
+		}
+		nodeValAsTree, ok := nodeVal.(map[string]interface{})
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "expect a tree to replace the root, got a scalar value: %T", nodeVal)
+		}
+		for k := range jsonTree {
+			delete(jsonTree, k)
+		}
+		for k, v := range nodeValAsTree {
+			jsonTree[k] = v
+		}
+	}
+	newConfig, err := srv.toGoStruct(jsonTree)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	// Apply the validated operation to the device.
+	if srv.callback != nil {
+		if applyErr := srv.callback(newConfig); applyErr != nil {
+			if rollbackErr := srv.callback(srv.config); rollbackErr != nil {
+				return nil, status.Errorf(codes.Internal, "error in rollback the failed operation (%v): %v", applyErr, rollbackErr)
+			}
+			return nil, status.Errorf(codes.Aborted, "error in applying operation to device: %v", applyErr)
+		}
+	}
+	return &pb.UpdateResult{
+		Path: path,
+		Op:   op,
+	}, nil
+}
+
 
 // Capabilities returns supported encodings and supported models.
 func (srv *Server) Capabilities(ctx context.Context, req *pb.CapabilityRequest) (*pb.CapabilityResponse, error) {
@@ -293,9 +565,74 @@ func (srv *Server) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse
 
 }
 
-// Set method is not implemented.
-func (srv *Server) Set(context.Context, *pb.SetRequest) (*pb.SetResponse, error) {
-	return nil, grpc.Errorf(codes.Unimplemented, "Set() is not implemented")
+// Set implements the Set RPC in gNMI spec.
+func (srv *Server) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetResponse, error) {
+	jsonTree, err := ygot.ConstructIETFJSON(srv.config, &ygot.RFC7951JSONConfig{})
+	if err != nil {
+		msg := fmt.Sprintf("error in constructing IETF JSON tree from config struct: %v", err)
+		fmt.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+
+	prefix := req.GetPrefix()
+	var results []*pb.UpdateResult
+
+	for _, path := range req.GetDelete() {
+		fmt.Printf("Delete path: %v\n", path)
+		res, grpcStatusError := srv.doDelete(jsonTree, prefix, path)
+		if grpcStatusError != nil {
+			return nil, grpcStatusError
+		}
+		results = append(results, res)
+	}
+	for _, upd := range req.GetReplace() {
+		fmt.Printf("Replace path: %v\n", upd.GetPath())
+		res, grpcStatusError := srv.doReplaceOrUpdate(jsonTree, pb.UpdateResult_REPLACE, prefix, upd.GetPath(), upd.GetVal())
+		if grpcStatusError != nil {
+			return nil, grpcStatusError
+		}
+		results = append(results, res)
+	}
+	for _, upd := range req.GetUpdate() {
+		fmt.Printf("Update path: %v\n", upd.GetPath())
+		res, grpcStatusError := srv.doReplaceOrUpdate(jsonTree, pb.UpdateResult_UPDATE, prefix, upd.GetPath(), upd.GetVal())
+		if grpcStatusError != nil {
+			return nil, grpcStatusError
+		}
+		results = append(results, res)
+	}
+	
+	// Convert IETF JSON to internal JSON
+	/*goStruct, err := srv.toGoStruct(jsonTree)
+	if err != nil {
+		msg := fmt.Sprintf("error in converting gostruct %v: %v", jsonTree, err)
+		fmt.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+	jsonTree, err = ygot.ConstructInternalJSON(goStruct)
+	if err != nil {
+		msg := fmt.Sprintf("error in constructing %v internal JSON tree: %v", goStruct, err)
+		fmt.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}*/
+
+	jsonDump, err := json.Marshal(jsonTree)
+	if err != nil {
+		msg := fmt.Sprintf("error in marshaling IETF JSON tree to bytes: %v", err)
+		fmt.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+	rootStruct, err := srv.model.NewConfigStruct(jsonDump)
+	if err != nil {
+		msg := fmt.Sprintf("error in creating config struct from IETF JSON data: %v", err)
+		fmt.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+	srv.config = rootStruct
+	return &pb.SetResponse {
+		Prefix:  req.GetPrefix(),
+		Response: results,
+	}, nil
 }
 
 // Subscribe method is not implemented.
