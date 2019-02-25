@@ -26,6 +26,7 @@ var (
 	ErrMaxTreeDepth      = errors.New("maximum tree depth exceeded")
 	ErrFileNotFound      = errors.New("file not found")
 	ErrDirectoryNotFound = errors.New("directory not found")
+	ErrEntryNotFound     = errors.New("entry not found")
 )
 
 // Tree is basically like a directory - it references a bunch of other trees
@@ -84,6 +85,17 @@ func (t *Tree) File(path string) (*File, error) {
 	}
 
 	return NewFile(path, e.Mode, blob), nil
+}
+
+// Size returns the plaintext size of an object, without reading it
+// into memory.
+func (t *Tree) Size(path string) (int64, error) {
+	e, err := t.FindEntry(path)
+	if err != nil {
+		return 0, ErrEntryNotFound
+	}
+
+	return t.s.EncodedObjectSize(e.Hash)
 }
 
 // Tree returns the tree identified by the `path` argument.
@@ -167,8 +179,6 @@ func (t *Tree) dir(baseName string) (*Tree, error) {
 	return tree, err
 }
 
-var errEntryNotFound = errors.New("entry not found")
-
 func (t *Tree) entry(baseName string) (*TreeEntry, error) {
 	if t.m == nil {
 		t.buildMap()
@@ -176,7 +186,7 @@ func (t *Tree) entry(baseName string) (*TreeEntry, error) {
 
 	entry, ok := t.m[baseName]
 	if !ok {
-		return nil, errEntryNotFound
+		return nil, ErrEntryNotFound
 	}
 
 	return entry, nil

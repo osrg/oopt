@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/kylelemons/godebug/pretty"
+	"github.com/openconfig/gnmi/errdiff"
+	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	"github.com/openconfig/goyang/pkg/yang"
 )
 
@@ -763,6 +765,153 @@ func TestDirectEntryChild(t *testing.T) {
 	for _, tt := range tests {
 		if got := isDirectEntryChild(tt.inParent, tt.inChild, tt.inCompressPaths); got != tt.want {
 			t.Errorf("%s: isDirectEntryChild(%v, %v, %v): did determine child status correctly, got: %v, want: %v", tt.name, tt.inParent, tt.inChild, tt.inCompressPaths, got, tt.want)
+		}
+	}
+}
+
+func TestResolveRootName(t *testing.T) {
+	tests := []struct {
+		name           string
+		inName         string
+		inDefName      string
+		inGenerateRoot bool
+		want           string
+	}{{
+		name:           "generate root false",
+		inGenerateRoot: false,
+	}, {
+		name:           "name specified",
+		inName:         "value",
+		inDefName:      "invalid",
+		inGenerateRoot: true,
+		want:           "value",
+	}, {
+		name:           "name not specified",
+		inDefName:      "default",
+		inGenerateRoot: true,
+		want:           "default",
+	}}
+
+	for _, tt := range tests {
+		if got := resolveRootName(tt.inName, tt.inDefName, tt.inGenerateRoot); got != tt.want {
+			t.Errorf("%s: resolveRootName(%s, %s, %v): did not get expected result, got: %s, want: %s", tt.name, tt.inName, tt.inDefName, tt.inGenerateRoot, got, tt.want)
+		}
+	}
+}
+
+func TestFindModelData(t *testing.T) {
+	tests := []struct {
+		name             string
+		in               []*yang.Entry
+		want             []*gpb.ModelData
+		wantErrSubstring string
+	}{{
+		name: "single model with organization and version",
+		in: []*yang.Entry{{
+			Name: "module-one",
+			Node: &yang.Module{
+				Name: "module-one",
+				Organization: &yang.Value{
+					Source: &yang.Statement{
+						Keyword:     "organization",
+						HasArgument: true,
+						Argument:    "openconfig",
+					},
+				},
+				Extensions: []*yang.Statement{{
+					Keyword:  "oc-ext:openconfig-version",
+					Argument: "0.1.0",
+				}},
+			},
+		}},
+		want: []*gpb.ModelData{{
+			Name:         "module-one",
+			Organization: "openconfig",
+			Version:      "0.1.0",
+		}},
+	}, {
+		name: "multiple models with organization and version",
+		in: []*yang.Entry{{
+			Name: "module-one",
+			Node: &yang.Module{
+				Name: "module-one",
+				Organization: &yang.Value{
+					Source: &yang.Statement{
+						Keyword:     "organization",
+						HasArgument: true,
+						Argument:    "openconfig",
+					},
+				},
+				Extensions: []*yang.Statement{{
+					Keyword:  "oc-foo:openconfig-version", // different import prefix
+					Argument: "0.1.0",
+				}},
+			},
+		}, {
+			Name: "module-two",
+			Node: &yang.Module{
+				Name: "module-two",
+				Organization: &yang.Value{
+					Source: &yang.Statement{
+						Keyword:     "organization",
+						HasArgument: true,
+						Argument:    "closedconfig",
+					},
+				},
+				Extensions: []*yang.Statement{{
+					Keyword:  "oc-ext:openconfig-version",
+					Argument: "0.4.0",
+				}},
+			},
+		}},
+		want: []*gpb.ModelData{{
+			Name:         "module-one",
+			Organization: "openconfig",
+			Version:      "0.1.0",
+		}, {
+			Name:         "module-two",
+			Organization: "closedconfig",
+			Version:      "0.4.0",
+		}},
+	}, {
+		name: "nil organization and extension",
+		in: []*yang.Entry{{
+			Name: "module-one",
+			Node: &yang.Module{
+				Name: "module-one",
+			},
+		}},
+		want: []*gpb.ModelData{{
+			Name: "module-one",
+		}},
+	}, {
+		name: "non-module in node",
+		in: []*yang.Entry{{
+			Name: "module-one",
+			Node: &yang.Leaf{},
+		}},
+		wantErrSubstring: "nil node, or not a module",
+	}, {
+		name: "nil node",
+		in: []*yang.Entry{{
+			Name: "badmod",
+		}},
+		wantErrSubstring: "nil node, or not a module",
+	}}
+
+	for _, tt := range tests {
+		got, err := findModelData(tt.in)
+
+		if diff := errdiff.Substring(err, tt.wantErrSubstring); diff != "" {
+			t.Errorf("%s: findModelData(%v): did not get expected error, %s", tt.name, tt.in, diff)
+		}
+
+		if err != nil {
+			continue
+		}
+
+		if diff := pretty.Compare(got, tt.want); diff != "" {
+			t.Errorf("%s: findModelData(%v): did not get expected result, diff(-got,+want):\n%s", tt.name, tt.in, diff)
 		}
 	}
 }

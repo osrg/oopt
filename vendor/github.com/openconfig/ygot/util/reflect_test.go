@@ -518,11 +518,62 @@ func TestUpdateField(t *testing.T) {
 	}
 }
 
+type testInterface interface {
+	isTestInterface()
+}
+
+type testImpl struct {
+	testField int32
+}
+
+func (testImpl) isTestInterface() {}
+
+type nonTestImpl struct{}
+
+type testInterfaceStruct struct {
+	T testInterface
+}
+
+func TestIsValueTypeComaptible(t *testing.T) {
+	tests := []struct {
+		name    string
+		inValue reflect.Value
+		inType  reflect.Type
+		want    bool
+	}{{
+		name:    "same type",
+		inValue: reflect.ValueOf("string"),
+		inType:  reflect.TypeOf("string"),
+		want:    true,
+	}, {
+		name:    "same type - ptr",
+		inValue: reflect.ValueOf(String("string")),
+		inType:  reflect.TypeOf(String("string")),
+		want:    true,
+	}, {
+		name:    "implements interface",
+		inValue: reflect.ValueOf(testImpl{}),
+		inType:  reflect.TypeOf(testInterfaceStruct{}).FieldByIndex([]int{0}).Type,
+		want:    true,
+	}, {
+		name:    "does not implement interface",
+		inValue: reflect.ValueOf(nonTestImpl{}),
+		inType:  reflect.TypeOf(testInterfaceStruct{}).FieldByIndex([]int{0}).Type,
+	}}
+
+	for _, tt := range tests {
+		if got := IsValueTypeCompatible(tt.inType, tt.inValue); got != tt.want {
+			t.Errorf("%s: IsValueTypeCompatible(%v, %v): did not get expected result, got: %v, want: %v", tt.name, tt.inType, tt.inValue, got, tt.want)
+		}
+	}
+}
+
 func TestInsertIntoSliceStructField(t *testing.T) {
 	type BasicStruct struct {
-		IntSliceField    []int
-		IntPtrSliceField []*int8
-		NonSliceField    int
+		IntSliceField       []int
+		IntPtrSliceField    []*int8
+		InterfaceSliceField []testInterface
+		NonSliceField       int
 	}
 
 	tests := []struct {
@@ -553,6 +604,29 @@ func TestInsertIntoSliceStructField(t *testing.T) {
 			fieldName:    "IntPtrSliceField",
 			fieldValue:   nil,
 			wantVal:      &BasicStruct{IntPtrSliceField: []*int8{nil}},
+		},
+		{
+			desc:         "slice of testInterface",
+			parentStruct: &BasicStruct{InterfaceSliceField: []testInterface{testImpl{}}},
+			fieldName:    "InterfaceSliceField",
+			fieldValue:   testImpl{testField: 1},
+			wantVal: &BasicStruct{
+				InterfaceSliceField: []testInterface{testImpl{}, testImpl{testField: 1}}},
+		},
+		{
+			desc:         "slice of testInterface, nil value",
+			parentStruct: &BasicStruct{},
+			fieldName:    "InterfaceSliceField",
+			fieldValue:   testImpl{},
+			wantVal:      &BasicStruct{InterfaceSliceField: []testInterface{testImpl{}}},
+		},
+		{
+			desc:         "slice of testInterface, bad value",
+			parentStruct: &BasicStruct{},
+			fieldName:    "InterfaceSliceField",
+			fieldValue:   nonTestImpl{},
+			wantErr: "cannot assign value {} (type util.nonTestImpl) to struct field " +
+				"InterfaceSliceField (type util.testInterface) in struct *util.BasicStruct",
 		},
 		{
 			desc:         "missing field",
@@ -1909,4 +1983,52 @@ func sliceToMap(s []interface{}) map[string]int {
 		m[vs] = m[vs] + 1
 	}
 	return m
+}
+
+func TestIsCompressedSchema(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *yang.Entry
+		want bool
+	}{{
+		name: "simple entry - root",
+		in: &yang.Entry{
+			Annotation: map[string]interface{}{
+				CompressedSchemaAnnotation: true,
+			},
+		},
+		want: true,
+	}, {
+		name: "simple entry - not compressed - root",
+		in:   &yang.Entry{},
+	}, {
+		name: "child entry - compressed",
+		in: &yang.Entry{
+			Parent: &yang.Entry{
+				Parent: &yang.Entry{
+					Parent: &yang.Entry{
+						Parent: &yang.Entry{},
+					},
+				},
+			},
+			Annotation: map[string]interface{}{
+				CompressedSchemaAnnotation: true,
+			},
+		},
+	}, {
+		name: "child entry - not compressed",
+		in: &yang.Entry{
+			Parent: &yang.Entry{
+				Parent: &yang.Entry{},
+			},
+		},
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsCompressedSchema(tt.in); got != tt.want {
+				t.Fatalf("incorrect result, got: %v, want: %v", got, tt.want)
+			}
+		})
+	}
 }

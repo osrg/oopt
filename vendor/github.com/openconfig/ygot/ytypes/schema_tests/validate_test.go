@@ -16,6 +16,7 @@
 package validate
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -31,8 +32,10 @@ import (
 	"github.com/openconfig/ygot/ygot"
 	"github.com/openconfig/ygot/ytypes"
 
+	"github.com/openconfig/gnmi/errdiff"
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	oc "github.com/openconfig/ygot/exampleoc"
+	uoc "github.com/openconfig/ygot/uexampleoc"
 	scpb "google.golang.org/genproto/googleapis/rpc/code"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
 )
@@ -112,6 +115,9 @@ func TestValidateInterface(t *testing.T) {
 	if err := dev.Validate(); err == nil {
 		t.Errorf("bad key: got nil, want error")
 	} else {
+		if diff := errdiff.Substring(err, "/device/interfaces/interface: key field Name: element key eth0 != map key bad_key"); diff != "" {
+			t.Errorf("did not get expected vlan-id error, %s", diff)
+		}
 		testErrLog(t, "bad key", err)
 	}
 
@@ -142,7 +148,19 @@ func TestValidateInterface(t *testing.T) {
 	if err := vlan0.Validate(); err == nil {
 		t.Errorf("bad vlan-id value: got nil, want error")
 	} else {
+		if diff := errdiff.Substring(err, "/device/interfaces/interface/subinterfaces/subinterface/vlan/config/vlan-id: unsigned integer value 4095 is outside specified ranges"); diff != "" {
+			t.Errorf("did not get expected vlan-id error, %s", diff)
+		}
 		testErrLog(t, "bad vlan-id value", err)
+	}
+
+	// Validate that we get two errors.
+	if errs := dev.Validate(); len(errs.(util.Errors)) != 2 {
+		var b bytes.Buffer
+		for _, err := range errs.(util.Errors) {
+			b.WriteString(fmt.Sprintf("	[%s]\n", err))
+		}
+		t.Errorf("did not get expected errors when validating device, got:\n %s (len: %d), want 5 errors", b.String(), len(errs.(util.Errors)))
 	}
 }
 
@@ -414,6 +432,7 @@ func TestUnmarshal(t *testing.T) {
 		jsonFilePath      string
 		parent            ygot.ValidatedGoStruct
 		opts              []ytypes.UnmarshalOpt
+		unmarshalFn       ytypes.UnmarshalFunc
 		wantValidationErr string
 		wantErr           string
 		outjsonFilePath   string // outjsonFilePath is the output JSON expected, when not specified it is assumed input == output.
@@ -422,34 +441,61 @@ func TestUnmarshal(t *testing.T) {
 			desc:         "basic",
 			jsonFilePath: "basic.json",
 			parent:       &oc.Device{},
+			unmarshalFn:  oc.Unmarshal,
 		},
 		{
 			desc:         "bgp",
 			jsonFilePath: "bgp-example.json",
 			parent:       &oc.Device{},
+			unmarshalFn:  oc.Unmarshal,
 		},
 		{
 			desc:              "interfaces",
 			jsonFilePath:      "interfaces-example.json",
 			parent:            &oc.Device{},
+			unmarshalFn:       oc.Unmarshal,
 			wantValidationErr: `validation err: field name AggregateId value Bundle-Ether22 (string ptr) schema path /device/interfaces/interface/ethernet/config/aggregate-id has leafref path /interfaces/interface/name not equal to any target nodes`,
 		},
 		{
 			desc:         "local-routing",
 			jsonFilePath: "local-routing-example.json",
 			parent:       &oc.Device{},
+			unmarshalFn:  oc.Unmarshal,
 		},
 		{
 			desc:         "policy",
 			jsonFilePath: "policy-example.json",
 			parent:       &oc.Device{},
+			unmarshalFn:  oc.Unmarshal,
 		},
 		{
 			desc:            "basic with extra fields",
 			jsonFilePath:    "basic-extra.json",
 			parent:          &oc.Device{},
+			unmarshalFn:     oc.Unmarshal,
 			opts:            []ytypes.UnmarshalOpt{&ytypes.IgnoreExtraFields{}},
 			outjsonFilePath: "basic.json",
+		},
+		{
+			desc:            "relay agent leaf-list of single type union",
+			jsonFilePath:    "relay-agent.json",
+			parent:          &oc.Device{},
+			unmarshalFn:     oc.Unmarshal,
+			outjsonFilePath: "relay-agent.json",
+		},
+		{
+			desc:            "unmarshal list with union key",
+			jsonFilePath:    "system-cpu.json",
+			parent:          &oc.Device{},
+			unmarshalFn:     oc.Unmarshal,
+			outjsonFilePath: "system-cpu.json",
+		},
+		{
+			desc:            "unmarshal list with union key - uncompressed",
+			jsonFilePath:    "system-cpu.json",
+			parent:          &uoc.Device{},
+			unmarshalFn:     uoc.Unmarshal,
+			outjsonFilePath: "system-cpu.json",
 		},
 	}
 
@@ -457,7 +503,8 @@ func TestUnmarshal(t *testing.T) {
 		Format: ygot.RFC7951,
 		RFC7951Config: &ygot.RFC7951JSONConfig{
 			AppendModuleName: true,
-		}}
+		},
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
@@ -477,7 +524,7 @@ func TestUnmarshal(t *testing.T) {
 				wantj = rj
 			}
 
-			err = oc.Unmarshal(j, tt.parent, tt.opts...)
+			err = tt.unmarshalFn(j, tt.parent, tt.opts...)
 			if got, want := errToString(err), tt.wantErr; got != want {
 				t.Errorf("%s: got error: %v, want error: %v ", tt.desc, got, want)
 			}
@@ -639,6 +686,7 @@ func TestNewNode(t *testing.T) {
 	}
 }
 
+// TODO(robjs): Remove this testing once we have removed the ygot utils experimental package.
 func TestGetNode(t *testing.T) {
 	testDevice := &oc.Device{
 		Bgp: &oc.Bgp{
@@ -785,6 +833,8 @@ func TestGetNode(t *testing.T) {
 */
 func TestLeafrefCurrent(t *testing.T) {
 	dev := &oc.Device{}
+	ni := dev.GetOrCreateNetworkInstance("DEFAULT")
+
 	i, err := dev.NewInterface("eth0")
 	if err != nil {
 		t.Fatalf("TestLeafrefCurrent: could not create new interface, got: %v, want error: nil", err)
@@ -793,12 +843,12 @@ func TestLeafrefCurrent(t *testing.T) {
 		t.Fatalf("TestLeafrefCurrent: could not create subinterface, got: %v, want error: nil", err)
 	}
 
-	ygot.BuildEmptyTree(dev)
-	mi, err := dev.Mpls.Global.NewInterface("eth0.0")
+	ygot.BuildEmptyTree(ni)
+	mi, err := ni.Mpls.Global.NewInterface("eth0.0")
 	if err != nil {
 		t.Fatalf("TestLeafrefCurrent: could not add new MPLS interface, got: %v, want error: nil", err)
 	}
-	mi.InterfaceRef = &oc.Mpls_Global_Interface_InterfaceRef{
+	mi.InterfaceRef = &oc.NetworkInstance_Mpls_Global_Interface_InterfaceRef{
 		Interface:    ygot.String("eth0"),
 		Subinterface: ygot.Uint32(0),
 	}
@@ -807,7 +857,7 @@ func TestLeafrefCurrent(t *testing.T) {
 		t.Fatalf("TestLeafrefCurrent: could not validate populated interfaces, got: %v, want: nil", err)
 	}
 
-	dev.Mpls.Global.Interface["eth0.0"].InterfaceRef.Subinterface = ygot.Uint32(1)
+	ni.Mpls.Global.Interface["eth0.0"].InterfaceRef.Subinterface = ygot.Uint32(1)
 	if err := dev.Validate(); err == nil {
 		t.Fatal("TestLeafrefCurrent: did not get expected error for non-existent subinterface, got: nil, want: error")
 	}

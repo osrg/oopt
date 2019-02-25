@@ -15,17 +15,398 @@
 package testutil
 
 import (
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/google/go-cmp/cmp"
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
+	"github.com/openconfig/ygot/ygot"
 )
+
+func mustPath(s string) *gnmipb.Path {
+	p, err := ygot.StringToStructuredPath(s)
+	if err != nil {
+		panic(fmt.Errorf("cannot converting string %s to path, got err: %v", s, err))
+	}
+	return p
+}
+
+func jsonIETF(s string) *gnmipb.TypedValue {
+	return &gnmipb.TypedValue{
+		Value: &gnmipb.TypedValue_JsonIetfVal{
+			[]byte(s),
+		},
+	}
+}
+func TestGetResponseEqual(t *testing.T) {
+	tests := []struct {
+		name   string
+		inA    *gnmipb.GetResponse
+		inB    *gnmipb.GetResponse
+		inOpts []ComparerOpt
+		want   bool
+	}{{
+		name: "equal notifications",
+		inA: &gnmipb.GetResponse{
+			Notification: []*gnmipb.Notification{{
+				Timestamp: 42,
+			}},
+		},
+		inB: &gnmipb.GetResponse{
+			Notification: []*gnmipb.Notification{{
+				Timestamp: 42,
+			}},
+		},
+		want: true,
+	}, {
+		name: "unequal notifications",
+		inA: &gnmipb.GetResponse{
+			Notification: []*gnmipb.Notification{{
+				Timestamp: 42,
+			}},
+		},
+		inB: &gnmipb.GetResponse{
+			Notification: []*gnmipb.Notification{{
+				Timestamp: 84,
+			}},
+		},
+		want: false,
+	}, {
+		name: "custom comparer for path",
+		inA: &gnmipb.GetResponse{
+			Notification: []*gnmipb.Notification{{
+				Timestamp: 0,
+				Update: []*gnmipb.Update{{
+					Path: mustPath("/fish:system/fish:config"),
+					Val:  jsonIETF(`{"hostname": "dev1"}`),
+				}},
+			}},
+		},
+		inB: &gnmipb.GetResponse{
+			Notification: []*gnmipb.Notification{{
+				Timestamp: 0,
+				Update: []*gnmipb.Update{{
+					Path: mustPath("/system/config"),
+					Val:  jsonIETF(`{"hostname": "dev1"}`),
+				}},
+			}},
+		},
+		inOpts: []ComparerOpt{
+			CustomComparer{
+				reflect.TypeOf(&gnmipb.Path{}): cmp.Comparer(func(a, b *gnmipb.Path) bool {
+					for _, p := range []*gnmipb.Path{a, b} {
+						for _, e := range p.Elem {
+							// Remove anything before a ":"
+							if pp := strings.Split(e.Name, ":"); len(pp) == 2 {
+								e.Name = pp[1]
+							}
+						}
+					}
+
+					return proto.Equal(a, b)
+				}),
+			},
+		},
+		want: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GetResponseEqual(tt.inA, tt.inB, tt.inOpts...); got != tt.want {
+				t.Fatalf("did not get expected result, got: %v, want: %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubscribeResponseEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		inA  *gnmipb.SubscribeResponse
+		inB  *gnmipb.SubscribeResponse
+		want bool
+	}{{
+		name: "unequal - sync response",
+		inA: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_SyncResponse{true},
+		},
+		inB: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_SyncResponse{false},
+		},
+		want: false,
+	}, {
+		name: "equal - sync response",
+		inA: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_SyncResponse{true},
+		},
+		inB: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_SyncResponse{true},
+		},
+		want: true,
+	}, {
+		name: "unequal - sync response cf. update",
+		inA: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_SyncResponse{true},
+		},
+		inB: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_Update{},
+		},
+		want: false,
+	}, {
+		name: "equal - updates equal",
+		inA: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		},
+		inB: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		},
+		want: true,
+	}, {
+		name: "unequal - updates",
+		inA: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		},
+		inB: &gnmipb.SubscribeResponse{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p2",
+							}},
+						},
+					}},
+				},
+			},
+		},
+		want: false,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SubscribeResponseEqual(tt.inA, tt.inB); got != tt.want {
+				t.Fatalf("did not get expected result, got: %v, want: %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubscribeResponseSetEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		inA  []*gnmipb.SubscribeResponse
+		inB  []*gnmipb.SubscribeResponse
+		want bool
+	}{{
+		name: "equal, same order",
+		inA: []*gnmipb.SubscribeResponse{{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		}, {
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p2",
+							}},
+						},
+					}},
+				},
+			},
+		}},
+		inB: []*gnmipb.SubscribeResponse{{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		}, {
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p2",
+							}},
+						},
+					}},
+				},
+			},
+		}},
+		want: true,
+	}, {
+		name: "equal - different order",
+		inA: []*gnmipb.SubscribeResponse{{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		}, {
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p2",
+							}},
+						},
+					}},
+				},
+			},
+		}},
+		inB: []*gnmipb.SubscribeResponse{{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p2",
+							}},
+						},
+					}},
+				},
+			},
+		}, {
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		}},
+		want: true,
+	}, {
+		name: "not equal",
+		inA: []*gnmipb.SubscribeResponse{{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		}, {
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p2",
+							}},
+						},
+					}},
+				},
+			},
+		}},
+		inB: []*gnmipb.SubscribeResponse{{
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "p1",
+							}},
+						},
+					}},
+				},
+			},
+		}, {
+			Response: &gnmipb.SubscribeResponse_Update{
+				&gnmipb.Notification{
+					Update: []*gnmipb.Update{{
+						Path: &gnmipb.Path{
+							Elem: []*gnmipb.PathElem{{
+								Name: "NOT EQUAL",
+							}},
+						},
+					}},
+				},
+			},
+		}},
+		want: false,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SubscribeResponseSetEqual(tt.inA, tt.inB); got != tt.want {
+				t.Fatalf("did not get expected result, got: %v, want: %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestNotificationSetEqual(t *testing.T) {
 	tests := []struct {
-		name string
-		inA  []*gnmipb.Notification
-		inB  []*gnmipb.Notification
-		want bool
+		name   string
+		inA    []*gnmipb.Notification
+		inB    []*gnmipb.Notification
+		inOpts []ComparerOpt
+		want   bool
 	}{{
 		name: "equal sets, length one",
 		inA: []*gnmipb.Notification{{
@@ -70,6 +451,16 @@ func TestNotificationSetEqual(t *testing.T) {
 			Timestamp: 4242,
 		}},
 		want: true,
+	}, {
+		name: "unequal sets, equal due to ignoring timestamp",
+		inA: []*gnmipb.Notification{{
+			Timestamp: 42,
+		}},
+		inB: []*gnmipb.Notification{{
+			Timestamp: 84,
+		}},
+		inOpts: []ComparerOpt{IgnoreTimestamp{}},
+		want:   true,
 	}, {
 		name: "integration example - same order",
 		inA: []*gnmipb.Notification{{
@@ -177,11 +568,122 @@ func TestNotificationSetEqual(t *testing.T) {
 			}},
 		}},
 		want: true,
+	}, {
+		name: "equal sets: json order different",
+		inA: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: &gnmipb.Path{
+					Elem: []*gnmipb.PathElem{{
+						Name: "one",
+					}},
+				},
+				Val: &gnmipb.TypedValue{
+					Value: &gnmipb.TypedValue_JsonIetfVal{[]byte(`{"foo": "bar", "baz": "bat"}`)},
+				},
+			}},
+		}},
+		inB: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: &gnmipb.Path{
+					Elem: []*gnmipb.PathElem{{
+						Name: "one",
+					}},
+				},
+				Val: &gnmipb.TypedValue{
+					Value: &gnmipb.TypedValue_JsonIetfVal{[]byte(`{"baz": "bat", "foo": "bar"}`)},
+				},
+			}},
+		}},
+		want: true,
+	}, {
+		name: "unequal sets: JSON",
+		inA: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: &gnmipb.Path{
+					Elem: []*gnmipb.PathElem{{
+						Name: "one",
+					}},
+				},
+				Val: &gnmipb.TypedValue{
+					Value: &gnmipb.TypedValue_JsonIetfVal{[]byte(`{"foo": "bar"}`)},
+				},
+			}},
+		}},
+		inB: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: &gnmipb.Path{
+					Elem: []*gnmipb.PathElem{{
+						Name: "one",
+					}},
+				},
+				Val: &gnmipb.TypedValue{
+					Value: &gnmipb.TypedValue_JsonIetfVal{[]byte(`{"baz": "bat", "foo": "bar"}`)},
+				},
+			}},
+		}},
+		want: false,
+	}, {
+		name: "unequal sets: unmarshalled JSON",
+		inA: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: mustPath("/"),
+				Val: jsonIETF(`{
+					"system": {
+						"config": {
+							"hostname": "box42.pop42"
+						}
+					}
+				}`),
+			}},
+		}},
+		inB: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: mustPath("/system"),
+				Val: jsonIETF(`{
+					"config": {
+						"hostname": "NOT-EQUAL"
+					}
+				}`),
+			}},
+		}},
+		want: false,
+	}, {
+		name: "equal sets: unmarshalled JSON",
+		inA: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: mustPath("/system"),
+				Val: jsonIETF(`{
+					"config": {
+						"hostname": "box42.pop42"
+					}
+				}`),
+			}},
+		}},
+		inB: []*gnmipb.Notification{{
+			Timestamp: 42,
+			Update: []*gnmipb.Update{{
+				Path: mustPath("/system"),
+				Val: jsonIETF(`{
+					"config": {
+						"hostname": "box42.pop42"
+					}
+				}`),
+			}},
+		}},
+		want: true,
 	}}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NotificationSetEqual(tt.inA, tt.inB); got != tt.want {
+
+			if got := NotificationSetEqual(tt.inA, tt.inB, tt.inOpts...); got != tt.want {
 				t.Fatalf("NotificationSetEqual(%#v, %#v): did not get expected result, got: %v, want: %v", tt.inA, tt.inB, got, tt.want)
 			}
 		})

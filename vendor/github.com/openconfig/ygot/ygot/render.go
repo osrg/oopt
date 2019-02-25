@@ -311,12 +311,13 @@ func findUpdatedLeaves(leaves map[*path]interface{}, s GoStruct, parent *gnmiPat
 		return fmt.Errorf("invalid parent specified: %v", parent)
 	}
 
-	if s == nil {
-		errs.Add(fmt.Errorf("input struct for %v was nil", parent))
+	sval := reflect.ValueOf(s)
+	if s == nil || util.IsValueNil(sval) || !sval.IsValid() || !util.IsValueStructPtr(sval) {
+		errs.Add(fmt.Errorf("input struct for %v was not valid", parent))
 		return errs.Err()
 	}
+	sval = sval.Elem()
 
-	sval := reflect.ValueOf(s).Elem()
 	stype := sval.Type()
 
 	for i := 0; i < sval.NumField(); i++ {
@@ -476,6 +477,22 @@ func appendgNMIPathElemKey(v reflect.Value, p *gnmiPath) (*gnmiPath, error) {
 		return nil, fmt.Errorf("nil value received for element %v", p)
 	}
 
+	k, err := PathKeyFromStruct(v)
+	if err != nil {
+		return nil, fmt.Errorf("cannot extract keys: %v", err)
+	}
+	newElem.Key = k
+
+	if err := np.SetIndex(np.Len()-1, &newElem); err != nil {
+		return nil, err
+	}
+	return np, nil
+}
+
+// PathKeyFromStruct returns a map[string]string which represents the keys for a YANG
+// list element. The provided reflect.Value must implement the KeyHelperGoStruct interface,
+// and hence be a struct which represents a list member within the schema.
+func PathKeyFromStruct(v reflect.Value) (map[string]string, error) {
 	gs, ok := v.Interface().(KeyHelperGoStruct)
 	if !ok {
 		return nil, fmt.Errorf("cannot render to gNMI PathElem for structs that do not implement KeyHelperGoStruct, got: %T (%s)", v.Type().Name(), v.Interface())
@@ -490,12 +507,7 @@ func appendgNMIPathElemKey(v reflect.Value, p *gnmiPath) (*gnmiPath, error) {
 	if err != nil {
 		return nil, err
 	}
-	newElem.Key = k
-
-	if err := np.SetIndex(np.Len()-1, &newElem); err != nil {
-		return nil, err
-	}
-	return np, nil
+	return k, nil
 }
 
 // keyMapAsStrings takes an input map[string]interface{}, keyed by the name of
@@ -588,39 +600,113 @@ func leavesToNotifications(leaves map[*path]interface{}, ts int64, pfx *gnmiPath
 		if err != nil {
 			return nil, err
 		}
-		u := &gnmipb.Update{Path: ppath}
 
-		switch val := reflect.ValueOf(v); val.Kind() {
-		case reflect.Slice:
-			switch {
-			case reflect.TypeOf(v).Name() == BinaryTypeName:
-				// This is a binary type which is defined as a []byte, so
-				// we encode it as bytes.
-				u.Val = &gnmipb.TypedValue{Value: &gnmipb.TypedValue_BytesVal{val.Bytes()}}
-			default:
-				sval, err := leaflistToSlice(val, false)
-				if err != nil {
-					return nil, err
-				}
-
-				arr, err := sliceToScalarArray(sval)
-				if err != nil {
-					return nil, err
-				}
-				u.Val = &gnmipb.TypedValue{Value: &gnmipb.TypedValue_LeaflistVal{arr}}
-			}
-		default:
-			val, err := value.FromScalar(v)
-			if err != nil {
-				return nil, err
-			}
-			u.Val = val
+		val, err := EncodeTypedValue(v, gnmipb.Encoding_JSON)
+		if err != nil {
+			return nil, err
 		}
 
-		n.Update = append(n.Update, u)
+		n.Update = append(n.Update, &gnmipb.Update{
+			Path: ppath,
+			Val:  val,
+		})
 	}
 
 	return []*gnmipb.Notification{n}, nil
+}
+
+// EncodeTypedValue encodes val into a gNMI TypedValue message, using the specified encoding
+// type if the value is a struct.
+func EncodeTypedValue(val interface{}, enc gnmipb.Encoding) (*gnmipb.TypedValue, error) {
+	switch v := val.(type) {
+	case GoStruct:
+		return marshalStruct(v, enc)
+	case GoEnum:
+		en, err := EnumName(v)
+		if err != nil {
+			return nil, fmt.Errorf("cannot marshal enum, %v", err)
+		}
+		return &gnmipb.TypedValue{Value: &gnmipb.TypedValue_StringVal{en}}, nil
+	}
+
+	vv := reflect.ValueOf(val)
+	switch {
+	case util.IsValueNil(vv) || !vv.IsValid():
+		return nil, nil
+	case vv.Type().Kind() == reflect.Int64:
+		// Invalid int64 that is not an enum.
+		return nil, fmt.Errorf("cannot represent field value %v as TypedValue", val)
+	case vv.Type().Name() == BinaryTypeName:
+		// This is a binary type which is defiend as a []byte, so we encode it as the bytes.
+		return &gnmipb.TypedValue{Value: &gnmipb.TypedValue_BytesVal{vv.Bytes()}}, nil
+	case vv.Type().Name() == EmptyTypeName:
+		return &gnmipb.TypedValue{Value: &gnmipb.TypedValue_BoolVal{vv.Bool()}}, nil
+	case vv.Kind() == reflect.Slice:
+		sval, err := leaflistToSlice(vv, false)
+		if err != nil {
+			return nil, err
+		}
+
+		arr, err := sliceToScalarArray(sval)
+		if err != nil {
+			return nil, err
+		}
+		return &gnmipb.TypedValue{Value: &gnmipb.TypedValue_LeaflistVal{arr}}, nil
+	case util.IsValueStructPtr(vv):
+		nv, err := unionInterfaceValue(vv, false)
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve union field value: %v", err)
+		}
+		vv = reflect.ValueOf(nv)
+	case util.IsValuePtr(vv):
+		vv = vv.Elem()
+		if util.IsNilOrInvalidValue(vv) {
+			return nil, nil
+		}
+	}
+
+	return value.FromScalar(vv.Interface())
+}
+
+// marshalStruct encodes the struct s according to the encoding specified by enc. It
+// is returned as a TypedValue gNMI message.
+func marshalStruct(s GoStruct, enc gnmipb.Encoding) (*gnmipb.TypedValue, error) {
+	if reflect.ValueOf(s).IsNil() {
+		return nil, nil
+	}
+
+	var (
+		j     map[string]interface{}
+		err   error
+		encfn func(s string) *gnmipb.TypedValue
+	)
+
+	switch enc {
+	case gnmipb.Encoding_JSON:
+		j, err = ConstructInternalJSON(s)
+		encfn = func(s string) *gnmipb.TypedValue {
+			return &gnmipb.TypedValue{Value: &gnmipb.TypedValue_JsonVal{[]byte(s)}}
+		}
+	case gnmipb.Encoding_JSON_IETF:
+		// We always append the module name when marshalling within a Notification.
+		j, err = ConstructIETFJSON(s, &RFC7951JSONConfig{AppendModuleName: true})
+		encfn = func(s string) *gnmipb.TypedValue {
+			return &gnmipb.TypedValue{Value: &gnmipb.TypedValue_JsonIetfVal{[]byte(s)}}
+		}
+	default:
+		return nil, fmt.Errorf("invalid encoding %v", gnmipb.Encoding_name[int32(enc)])
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	js, err := json.MarshalIndent(j, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("cannot encode JSON, %v", err)
+	}
+
+	return encfn(string(js)), nil
 }
 
 // leaflistToSlice takes a reflect.Value that represents a leaf list in the YANG schema
@@ -1342,11 +1428,17 @@ func unionPtrValue(v reflect.Value, appendModuleName bool) (interface{}, error) 
 // the relevant type where required.
 func resolveUnionVal(v interface{}, appendModuleName bool) (interface{}, error) {
 	if _, isEnum := v.(GoEnum); isEnum {
-		var err error
-		v, _, err = enumFieldToString(reflect.ValueOf(v), appendModuleName)
+		val, set, err := enumFieldToString(reflect.ValueOf(v), appendModuleName)
 		if err != nil {
 			return nil, err
 		}
+
+		// If the enum isn't set, then we return a nil value
+		// such that it is not included in the output JSON.
+		if !set {
+			return nil, nil
+		}
+		v = val
 	}
 	return v, nil
 }

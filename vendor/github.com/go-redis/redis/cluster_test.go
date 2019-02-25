@@ -48,11 +48,14 @@ func (s *clusterScenario) addrs() []string {
 	return addrs
 }
 
-func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
-	var errBadState = fmt.Errorf("cluster state is not consistent")
-
+func (s *clusterScenario) clusterClientUnsafe(opt *redis.ClusterOptions) *redis.ClusterClient {
 	opt.Addrs = s.addrs()
-	client := redis.NewClusterClient(opt)
+	return redis.NewClusterClient(opt)
+
+}
+
+func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.ClusterClient {
+	client := s.clusterClientUnsafe(opt)
 
 	err := eventually(func() error {
 		if opt.ClusterSlots != nil {
@@ -65,27 +68,7 @@ func (s *clusterScenario) clusterClient(opt *redis.ClusterOptions) *redis.Cluste
 		}
 
 		if !state.IsConsistent() {
-			return errBadState
-		}
-
-		if len(state.Masters) < 3 {
-			return errBadState
-		}
-		for _, master := range state.Masters {
-			s := master.Client.Info("replication").Val()
-			if !strings.Contains(s, "role:master") {
-				return errBadState
-			}
-		}
-
-		if len(state.Slaves) < 3 {
-			return errBadState
-		}
-		for _, slave := range state.Slaves {
-			s := slave.Client.Info("replication").Val()
-			if !strings.Contains(s, "role:slave") {
-				return errBadState
-			}
+			return fmt.Errorf("cluster state is not consistent")
 		}
 
 		return nil
@@ -208,11 +191,11 @@ func startCluster(scenario *clusterScenario) error {
 }
 
 func assertSlotsEqual(slots, wanted []redis.ClusterSlot) error {
-outer_loop:
+outerLoop:
 	for _, s2 := range wanted {
 		for _, s1 := range slots {
 			if slotEqual(s1, s2) {
-				continue outer_loop
+				continue outerLoop
 			}
 		}
 		return fmt.Errorf("%v not found in %v", s2, slots)
@@ -557,13 +540,13 @@ var _ = Describe("ClusterClient", func() {
 		It("removes idle connections", func() {
 			stats := client.PoolStats()
 			Expect(stats.TotalConns).NotTo(BeZero())
-			Expect(stats.FreeConns).NotTo(BeZero())
+			Expect(stats.IdleConns).NotTo(BeZero())
 
 			time.Sleep(2 * time.Second)
 
 			stats = client.PoolStats()
 			Expect(stats.TotalConns).To(BeZero())
-			Expect(stats.FreeConns).To(BeZero())
+			Expect(stats.IdleConns).To(BeZero())
 		})
 
 		It("returns an error when there are no attempts left", func() {
@@ -727,15 +710,20 @@ var _ = Describe("ClusterClient", func() {
 
 				Eventually(func() int64 {
 					return slave.DBSize().Val()
-				}, 30*time.Second).Should(Equal(int64(0)))
+				}, "30s").Should(Equal(int64(0)))
 
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			state, err := client.LoadState()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(state.IsConsistent()).To(BeTrue())
+			Eventually(func() bool {
+				state, err = client.LoadState()
+				if err != nil {
+					return false
+				}
+				return state.IsConsistent()
+			}, "30s").Should(BeTrue())
 
 			for _, slave := range state.Slaves {
 				err = slave.Client.ClusterFailover().Err()
@@ -744,7 +732,7 @@ var _ = Describe("ClusterClient", func() {
 				Eventually(func() bool {
 					state, _ := client.LoadState()
 					return state.IsConsistent()
-				}, 30*time.Second).Should(BeTrue())
+				}, "30s").Should(BeTrue())
 			}
 		})
 
@@ -794,6 +782,60 @@ var _ = Describe("ClusterClient", func() {
 			failover = true
 
 			opt = redisClusterOptions()
+			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
+				slots := []redis.ClusterSlot{{
+					Start: 0,
+					End:   4999,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":" + ringShard1Port,
+					}},
+				}, {
+					Start: 5000,
+					End:   9999,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":" + ringShard2Port,
+					}},
+				}, {
+					Start: 10000,
+					End:   16383,
+					Nodes: []redis.ClusterNode{{
+						Addr: ":" + ringShard3Port,
+					}},
+				}}
+				return slots, nil
+			}
+			client = cluster.clusterClient(opt)
+
+			err := client.ForEachMaster(func(master *redis.Client) error {
+				return master.FlushDB().Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ForEachSlave(func(slave *redis.Client) error {
+				Eventually(func() int64 {
+					return client.DBSize().Val()
+				}, 30*time.Second).Should(Equal(int64(0)))
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			failover = false
+
+			err := client.Close()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		assertClusterClient()
+	})
+
+	Describe("ClusterClient with RouteRandomly and ClusterSlots", func() {
+		BeforeEach(func() {
+			failover = true
+
+			opt = redisClusterOptions()
+			opt.RouteRandomly = true
 			opt.ClusterSlots = func() ([]redis.ClusterSlot, error) {
 				slots := []redis.ClusterSlot{{
 					Start: 0,
@@ -895,6 +937,36 @@ var _ = Describe("ClusterClient without valid nodes", func() {
 	})
 })
 
+var _ = Describe("ClusterClient with unavailable Cluster", func() {
+	var client *redis.ClusterClient
+
+	BeforeEach(func() {
+		for _, node := range cluster.clients {
+			err := node.ClientPause(5 * time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		opt := redisClusterOptions()
+		opt.ReadTimeout = 250 * time.Millisecond
+		opt.WriteTimeout = 250 * time.Millisecond
+		opt.MaxRedirects = 1
+		client = cluster.clusterClientUnsafe(opt)
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("recovers when Cluster recovers", func() {
+		err := client.Ping().Err()
+		Expect(err).To(HaveOccurred())
+
+		Eventually(func() error {
+			return client.Ping().Err()
+		}, "30s").ShouldNot(HaveOccurred())
+	})
+})
+
 var _ = Describe("ClusterClient timeout", func() {
 	var client *redis.ClusterClient
 
@@ -939,7 +1011,7 @@ var _ = Describe("ClusterClient timeout", func() {
 		})
 	}
 
-	const pause = 3 * time.Second
+	const pause = 5 * time.Second
 
 	Context("read/write timeout", func() {
 		BeforeEach(func() {
@@ -980,7 +1052,7 @@ func newClusterScenario() *clusterScenario {
 	}
 }
 
-func BenchmarkRedisClusterPing(b *testing.B) {
+func BenchmarkClusterPing(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
 	}
@@ -1006,7 +1078,7 @@ func BenchmarkRedisClusterPing(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisClusterSetString(b *testing.B) {
+func BenchmarkClusterSetString(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
 	}
@@ -1034,7 +1106,7 @@ func BenchmarkRedisClusterSetString(b *testing.B) {
 	})
 }
 
-func BenchmarkRedisClusterReloadState(b *testing.B) {
+func BenchmarkClusterReloadState(b *testing.B) {
 	if testing.Short() {
 		b.Skip("skipping in short mode")
 	}

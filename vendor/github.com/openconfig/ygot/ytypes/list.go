@@ -278,7 +278,7 @@ func nameMatchesPath(fieldName string, path []string) (bool, error) {
 //   jsonList is a JSON list
 //   opts... are a set of ytypes.UnmarshalOptionst that are used to control
 //     the behaviour of the unmarshal function.
-func unmarshalList(schema *yang.Entry, parent interface{}, jsonList interface{}, opts ...UnmarshalOpt) error {
+func unmarshalList(schema *yang.Entry, parent interface{}, jsonList interface{}, enc Encoding, opts ...UnmarshalOpt) error {
 	if util.IsValueNil(jsonList) {
 		return nil
 	}
@@ -287,7 +287,7 @@ func unmarshalList(schema *yang.Entry, parent interface{}, jsonList interface{},
 		return err
 	}
 
-	util.DbgPrint("unmarshalList jsonList %v, type %T, into parent type %T, schema name %s", util.ValueStr(jsonList), jsonList, parent, schema.Name)
+	util.DbgPrint("unmarshalList jsonList %v, type %T, into parent type %T, schema name %s", util.ValueStrDebug(jsonList), jsonList, parent, schema.Name)
 
 	// Parent must be a map, slice ptr, or struct ptr.
 	t := reflect.TypeOf(parent)
@@ -330,7 +330,7 @@ func unmarshalList(schema *yang.Entry, parent interface{}, jsonList interface{},
 		jt := le.(map[string]interface{})
 		newVal := reflect.New(listElementType.Elem())
 		util.DbgPrint("creating a new list element val of type %v", newVal.Type())
-		if err := unmarshalStruct(schema, newVal.Interface(), jt, opts...); err != nil {
+		if err := unmarshalStruct(schema, newVal.Interface(), jt, enc, opts...); err != nil {
 			return err
 		}
 
@@ -455,7 +455,7 @@ func makeKeyForInsert(schema *yang.Entry, parentMap interface{}, newVal reflect.
 			util.DbgPrint("Setting value of %v (%T) in key struct (%T)", nv.Interface(), nv.Interface(), newKey.Interface())
 			newKeyField := newKey.FieldByName(kfn)
 			if !util.ValuesAreSameType(newKeyField, nv) {
-				return reflect.ValueOf(nil), fmt.Errorf("%v is not assignable to %v", nv.Type(), newKeyField.Type())
+				return reflect.ValueOf(nil), fmt.Errorf("multi-key %v is not assignable to %v", nv.Type(), newKeyField.Type())
 			}
 			newKeyField.Set(nv)
 		}
@@ -472,8 +472,11 @@ func makeKeyForInsert(schema *yang.Entry, parentMap interface{}, newVal reflect.
 	util.DbgPrint("key value is %v.", kv)
 
 	rvKey := reflect.ValueOf(kv)
-	if !util.ValuesAreSameType(newKey, rvKey) {
-		return reflect.ValueOf(nil), fmt.Errorf("%v is not assignable to %v", rvKey.Type(), newKey.Type())
+
+	switch {
+	case util.IsTypeInterface(listKeyType) && util.IsValueTypeCompatible(listKeyType, newKey), util.ValuesAreSameType(newKey, rvKey):
+	default:
+		return reflect.ValueOf(nil), fmt.Errorf("single-key %v is not assignable to %v", rvKey.Type(), newKey.Type())
 	}
 	newKey.Set(rvKey)
 

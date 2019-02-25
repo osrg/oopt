@@ -16,9 +16,14 @@ package ygen
 
 import (
 	"bytes"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/openconfig/goyang/pkg/yang"
+	"github.com/openconfig/ygot/ygot"
+
+	gpb "github.com/openconfig/gnmi/proto/gnmi"
 )
 
 // children returns all child elements of a directory element e that are not
@@ -138,10 +143,9 @@ func removePrefix(s string) string {
 	return strings.Split(s, ":")[1]
 }
 
-// parentModuleName returns the name of the module that defined the yang.Node
-// supplied as the node argument. If the discovered root node of the node is found
-// to be a submodule, the name of the parent module is returned.
-func parentModuleName(node yang.Node) string {
+// definingModule returns the name of the module that defined the yang.Node
+// supplied. If node is within a submodule, the parent module name is returned.
+func definingModule(node yang.Node) yang.Node {
 	var definingMod yang.Node
 	definingMod = yang.RootNode(node)
 	if definingMod.Kind() == "submodule" {
@@ -149,7 +153,21 @@ func parentModuleName(node yang.Node) string {
 		mod := definingMod.(*yang.Module)
 		definingMod = mod.BelongsTo
 	}
+	return definingMod
+}
 
+// parentModuleName returns the name of the module or submodule that defined
+// the supplied node.
+func parentModuleName(node yang.Node) string {
+	return definingModule(node).NName()
+}
+
+// parentModulePrettyName returns the name of the module that defined the yang.Node
+// supplied as the node argument. If the discovered root node of the node is found
+// to be a submodule, the name of the parent module is returned. If the root has
+// a camel case extension, this is returned rather than the actual module name.
+func parentModulePrettyName(node yang.Node) string {
+	definingMod := definingModule(node)
 	if name, ok := camelCaseNameExt(definingMod.Exts()); ok {
 		return name
 	}
@@ -270,15 +288,6 @@ func enumeratedUnionTypes(types []*yang.YangType) []*yang.YangType {
 	return eTypes
 }
 
-// appendIfNotEmpty appends a string s to a slice of strings if the string s is
-// not nil, similarly to append it returns the modified slice.
-func appendIfNotEmpty(slice []string, s string) []string {
-	if s != "" {
-		return append(slice, s)
-	}
-	return slice
-}
-
 // addNewKeys appends entries from the newKeys string slice to the
 // existing map if the entry is not an existing key. The existing
 // map is modified in place.
@@ -396,4 +405,93 @@ func isChildOfModule(msg *yangDirectory) bool {
 		return true
 	}
 	return false
+}
+
+// isYANGBaseType determines whether the supplied YangType is a built-in type
+// in YANG, or a derived type (i.e., typedef).
+func isYANGBaseType(t *yang.YangType) bool {
+	_, builtin := yang.TypeKindFromName[t.Name]
+	return builtin
+}
+
+// typeDefaultValue returns the default value of the type t if it is specified.
+// nil is returned if no default is specified.
+func typeDefaultValue(t *yang.YangType) *string {
+	if t.Default == "" {
+		return nil
+	}
+	return ygot.String(t.Default)
+}
+
+// enumDefaultValue sanitises a default value specified for an enumeration
+// which can be specified as prefix:value in the YANG schema. The baseName
+// is used as the generated enumeration name stripping any prefix specified,
+// (allowing removal of the enumeration type prefix if required). The default
+// value in the form <sanitised_baseName>_<sanitised_defVal> is returned as
+// a pointer.
+func enumDefaultValue(baseName, defVal, prefix string) *string {
+	if strings.Contains(defVal, ":") {
+		defVal = strings.Split(defVal, ":")[1]
+	}
+
+	if prefix != "" {
+		baseName = strings.TrimPrefix(baseName, prefix)
+	}
+
+	return ygot.String(fmt.Sprintf("%s_%s", baseName, defVal))
+}
+
+// resolveRootName resolves the name of the fakeroot by taking configuration
+// and the default values, along with a boolean indicating whether the fake
+// root is to be generated. It returns an empty string if the root is not
+// to be generated.
+func resolveRootName(name, defName string, generateRoot bool) string {
+	if !generateRoot {
+		return ""
+	}
+
+	if name == "" {
+		return defName
+	}
+
+	return name
+}
+
+type modelDataProto []*gpb.ModelData
+
+func (m modelDataProto) Less(a, b int) bool { return m[a].Name < m[b].Name }
+func (m modelDataProto) Len() int           { return len(m) }
+func (m modelDataProto) Swap(a, b int)      { m[a], m[b] = m[b], m[a] }
+
+// findModelData takes an input slice of yang.Entry pointers, which are assumed to
+// represent YANG modules, and returns the gNMI ModelData that corresponds with each
+// of the input modules.
+func findModelData(mods []*yang.Entry) ([]*gpb.ModelData, error) {
+	modelData := modelDataProto{}
+	for _, mod := range mods {
+		mNode, ok := mod.Node.(*yang.Module)
+		if !ok || mNode == nil {
+			return nil, fmt.Errorf("nil node, or not a module for node %s", mod.Name)
+		}
+		md := &gpb.ModelData{
+			Name: mod.Name,
+		}
+
+		if mNode.Organization != nil {
+			md.Organization = mNode.Organization.Statement().Argument
+		}
+
+		for _, e := range mNode.Exts() {
+			if p := strings.Split(e.Keyword, ":"); len(p) == 2 && p[1] == "openconfig-version" {
+				md.Version = e.Argument
+				break
+			}
+		}
+
+		modelData = append(modelData, md)
+	}
+
+	sort.Sort(modelData)
+
+	return modelData, nil
 }

@@ -23,8 +23,9 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/kylelemons/godebug/pretty"
 	"github.com/openconfig/gnmi/errdiff"
-	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 	"github.com/openconfig/ygot/testutil"
+
+	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 )
 
 func TestPathElemBasics(t *testing.T) {
@@ -704,6 +705,7 @@ type renderExample struct {
 	InvalidMap    map[string]*invalidGoStruct         `path:"invalid-gostruct-map"`
 	InvalidPtr    *invalidGoStruct                    `path:"invalid-gostruct"`
 	Empty         YANGEmpty                           `path:"empty"`
+	EnumLeafList  []EnumTest                          `path:"enum-leaflist"`
 }
 
 // IsYANGGoStruct ensures that the renderExample type implements the GoStruct
@@ -735,6 +737,12 @@ type renderExampleUnionInvalid struct {
 }
 
 func (*renderExampleUnionInvalid) IsRenderUnionExample() {}
+
+type renderExampleUnionEnum struct {
+	Enum EnumTest
+}
+
+func (*renderExampleUnionEnum) IsRenderUnionExample() {}
 
 // renderExampleChild is a child of the renderExample struct.
 type renderExampleChild struct {
@@ -918,6 +926,11 @@ func TestTogNMINotifications(t *testing.T) {
 			},
 		},
 		wantErr: true,
+	}, {
+		name:        "nil value",
+		inTimestamp: 42,
+		inStruct:    nil,
+		wantErr:     true,
 	}, {
 		name:        "no path tags on struct",
 		inTimestamp: 42,
@@ -1530,7 +1543,7 @@ func (t *testAnnotation) MarshalJSON() ([]byte, error) {
 }
 
 func (t *testAnnotation) UnmarshalJSON(d []byte) error {
-	return json.Unmarshal(d, *t)
+	return json.Unmarshal(d, t)
 }
 
 type errorAnnotation struct {
@@ -2109,6 +2122,23 @@ func TestConstructJSON(t *testing.T) {
 			},
 		},
 		wantErr: true,
+	}, {
+		name:     "unset enum",
+		in:       &renderExample{EnumField: EnumTestUNSET},
+		wantIETF: map[string]interface{}{},
+		wantSame: true,
+	}, {
+		name: "set enum in union",
+		in:   &renderExample{UnionVal: &renderExampleUnionEnum{EnumTestVALONE}},
+		wantIETF: map[string]interface{}{
+			"union-val": "VAL_ONE",
+		},
+		wantSame: true,
+	}, {
+		name:     "unset enum in union",
+		in:       &renderExample{UnionVal: &renderExampleUnionEnum{EnumTestUNSET}},
+		wantIETF: map[string]interface{}{},
+		wantSame: true,
 	}}
 
 	for _, tt := range tests {
@@ -2475,5 +2505,123 @@ func TestKeyValueAsString(t *testing.T) {
 		if !reflect.DeepEqual(s, tt.want) {
 			t.Errorf("got %v, want %v", s, tt.want)
 		}
+	}
+}
+
+func TestEncodeTypedValue(t *testing.T) {
+	tests := []struct {
+		name             string
+		inVal            interface{}
+		inEnc            gnmipb.Encoding
+		want             *gnmipb.TypedValue
+		wantErrSubstring string
+	}{{
+		name:  "simple string encoding",
+		inVal: "hello",
+		want:  &gnmipb.TypedValue{Value: &gnmipb.TypedValue_StringVal{"hello"}},
+	}, {
+		name:  "enumeration",
+		inVal: EnumTestVALONE,
+		want:  &gnmipb.TypedValue{Value: &gnmipb.TypedValue_StringVal{"VAL_ONE"}},
+	}, {
+		name:  "leaf-list of enumeration",
+		inVal: []EnumTest{EnumTestVALONE},
+		want: &gnmipb.TypedValue{Value: &gnmipb.TypedValue_LeaflistVal{
+			&gnmipb.ScalarArray{
+				Element: []*gnmipb.TypedValue{{
+					Value: &gnmipb.TypedValue_StringVal{"VAL_ONE"},
+				}},
+			},
+		}},
+	}, {
+		name:  "leaf-list of string",
+		inVal: []string{"one", "two"},
+		want: &gnmipb.TypedValue{Value: &gnmipb.TypedValue_LeaflistVal{
+			&gnmipb.ScalarArray{
+				Element: []*gnmipb.TypedValue{{
+					Value: &gnmipb.TypedValue_StringVal{"one"},
+				}, {
+					Value: &gnmipb.TypedValue_StringVal{"two"},
+				}},
+			},
+		}},
+	}, {
+		name:             "invalid enum",
+		inVal:            int64(42),
+		wantErrSubstring: "cannot represent field value 42 as TypedValue",
+	}, {
+		name:  "binary",
+		inVal: Binary([]byte{0x00, 0x01}),
+		want:  &gnmipb.TypedValue{Value: &gnmipb.TypedValue_BytesVal{[]byte{0x00, 0x01}}},
+	}, {
+		name:  "empty",
+		inVal: YANGEmpty(true),
+		want:  &gnmipb.TypedValue{Value: &gnmipb.TypedValue_BoolVal{true}},
+	}, {
+		name:  "nil scalar",
+		inVal: nil,
+		want:  nil,
+	}, {
+		name:  "leaf-list",
+		inVal: []string{"one", "two"},
+		want: &gnmipb.TypedValue{Value: &gnmipb.TypedValue_LeaflistVal{
+			&gnmipb.ScalarArray{
+				Element: []*gnmipb.TypedValue{{
+					Value: &gnmipb.TypedValue_StringVal{"one"},
+				}, {
+					Value: &gnmipb.TypedValue_StringVal{"two"},
+				}},
+			},
+		}},
+	}, {
+		name:  "pointer val",
+		inVal: string("val"),
+		want:  &gnmipb.TypedValue{Value: &gnmipb.TypedValue_StringVal{"val"}},
+	}, {
+		name: "struct val - ietf json",
+		inVal: &ietfRenderExample{
+			F1: String("hello"),
+		},
+		inEnc: gnmipb.Encoding_JSON_IETF,
+		want: &gnmipb.TypedValue{Value: &gnmipb.TypedValue_JsonIetfVal{[]byte(`{
+  "f1mod:f1": "hello"
+}`)}},
+	}, {
+		name: "struct val - internal json",
+		inVal: &ietfRenderExample{
+			F1: String("hi"),
+		},
+		inEnc: gnmipb.Encoding_JSON,
+		want: &gnmipb.TypedValue{Value: &gnmipb.TypedValue_JsonVal{[]byte(`{
+  "f1": "hi"
+}`)}},
+	}, {
+		name:             "unsupported encoding",
+		inVal:            &ietfRenderExample{},
+		inEnc:            gnmipb.Encoding_PROTO,
+		wantErrSubstring: "invalid encoding",
+	}, {
+		name:  "nil struct",
+		inVal: (*ietfRenderExample)(nil),
+		inEnc: gnmipb.Encoding_JSON_IETF,
+		want:  nil,
+	}, {
+		name:  "nil pointer",
+		inVal: (*string)(nil),
+		inEnc: gnmipb.Encoding_JSON_IETF,
+		want:  nil,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := EncodeTypedValue(tt.inVal, tt.inEnc)
+			if diff := errdiff.Substring(err, tt.wantErrSubstring); diff != "" {
+				t.Fatalf("did not get expected error, %s", diff)
+			}
+
+			if !proto.Equal(got, tt.want) {
+				t.Fatalf("did not get expected value, got: %v, want: %v", got, tt.want)
+			}
+		})
 	}
 }

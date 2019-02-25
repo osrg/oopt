@@ -38,9 +38,34 @@ var (
 
 func init() {
 	var err error
-	if SchemaTree, err = ygot.GzipToSchema(ySchema); err != nil {
+	if SchemaTree, err = UnzipSchema(); err != nil {
 		panic("schema error: " +  err.Error())
 	}
+}
+
+// Schema returns the details of the generated schema.
+func Schema() (*ytypes.Schema, error) {
+	uzp, err := UnzipSchema()
+	if err != nil {
+		return nil, fmt.Errorf("cannot unzip schema, %v", err)
+	}
+
+	return &ytypes.Schema{
+		Root: &Device{},
+		SchemaTree: uzp,
+		Unmarshal: Unmarshal,
+	}, nil
+}
+
+// UnzipSchema unzips the zipped schema and returns a map of yang.Entry nodes,
+// keyed by the name of the struct that the yang.Entry describes the schema for.
+func UnzipSchema() (map[string]*yang.Entry, error) {
+	var schemaTree map[string]*yang.Entry
+	var err error
+	if schemaTree, err = ygot.GzipToSchema(ySchema); err != nil {
+		return nil, fmt.Errorf("could not unzip the schema; %v", err)
+	}
+	return schemaTree, nil
 }
 
 // Unmarshal unmarshals data, which must be RFC7951 JSON format, into
@@ -100,8 +125,8 @@ func (t *Bgp) NewNeighbor(PeerAddress string) (*Bgp_Neighbor, error){
 }
 
 // Validate validates s against the YANG schema corresponding to its type.
-func (s *Bgp) Validate(opts ...ygot.ValidationOption) error {
-	if err := ytypes.Validate(SchemaTree["Bgp"], s, opts...); err != nil {
+func (t *Bgp) Validate(opts ...ygot.ValidationOption) error {
+	if err := ytypes.Validate(SchemaTree["Bgp"], t, opts...); err != nil {
 		return err
 	}
 	return nil
@@ -136,8 +161,8 @@ func (t *Bgp_Neighbor) ΛListKeyMap() (map[string]interface{}, error) {
 }
 
 // Validate validates s against the YANG schema corresponding to its type.
-func (s *Bgp_Neighbor) Validate(opts ...ygot.ValidationOption) error {
-	if err := ytypes.Validate(SchemaTree["Bgp_Neighbor"], s, opts...); err != nil {
+func (t *Bgp_Neighbor) Validate(opts ...ygot.ValidationOption) error {
+	if err := ytypes.Validate(SchemaTree["Bgp_Neighbor"], t, opts...); err != nil {
 		return err
 	}
 	return nil
@@ -198,8 +223,8 @@ type Device struct {
 func (*Device) IsYANGGoStruct() {}
 
 // Validate validates s against the YANG schema corresponding to its type.
-func (s *Device) Validate(opts ...ygot.ValidationOption) error {
-	if err := ytypes.Validate(SchemaTree["Device"], s, opts...); err != nil {
+func (t *Device) Validate(opts ...ygot.ValidationOption) error {
+	if err := ytypes.Validate(SchemaTree["Device"], t, opts...); err != nil {
 		return err
 	}
 	return nil

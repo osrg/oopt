@@ -40,6 +40,12 @@ import (
 // entire data tree. The supplied LeafrefOptions specify particular behaviours
 // of the leafref validation such as ignoring missing pointed to elements.
 func ValidateLeafRefData(schema *yang.Entry, value interface{}, opt *LeafrefOptions) util.Errors {
+	// If the IgnoreMissingData flag is set, then we do not need to iterate through nodes,
+	// so immediately return no error.
+	if opt != nil && opt.IgnoreMissingData {
+		return nil
+	}
+
 	// validateLefRefDataIterFunc is called on every node in the tree through
 	// ForEachField below.
 	validateLefRefDataIterFunc := func(ni *util.NodeInfo, in, out interface{}) util.Errors {
@@ -64,7 +70,7 @@ func ValidateLeafRefData(schema *yang.Entry, value interface{}, opt *LeafrefOpti
 		}
 
 		pathStr := util.StripModulePrefixesStr(schema.Type.Path)
-		util.DbgPrint("Verifying leafref at %s, matching nodes are: %v", pathStr, util.ValueStr(matchNodes))
+		util.DbgPrint("Verifying leafref at %s, matching nodes are: %v", pathStr, util.ValueStrDebug(matchNodes))
 
 		match, err := matchesNodes(ni, matchNodes)
 		if err != nil {
@@ -88,7 +94,7 @@ func ValidateLeafRefData(schema *yang.Entry, value interface{}, opt *LeafrefOpti
 // be ignored by leafrefs, it logs the error that would have been returned if the
 // Log field of the LeafrefOptions is set to true.
 func leafrefErrOrLog(e util.Errors, opt *LeafrefOptions) util.Errors {
-	if opt == nil || !opt.IgnoreMissingData {
+	if opt == nil {
 		return e
 	}
 
@@ -172,10 +178,31 @@ func dataNodesAtPath(ni *util.NodeInfo, path *gpb.Path) ([]interface{}, error) {
 			if root.Parent == nil {
 				return nil, fmt.Errorf("no parent for leafref path at %v, with remaining path %s", ni.Schema.Path(), path)
 			}
-			path.Elem = removeParentDirPrefix(path.GetElem(), root.PathFromParent)
-			util.DbgPrint("going up data tree from type %s to %s, schema path from parent is %v, remaining path %v",
-				root.FieldValue.Type(), root.Parent.FieldValue.Type(), root.PathFromParent, path)
-			root = root.Parent
+			if !util.IsCompressedSchema(root.Schema) && root.Schema.IsList() && util.IsValueMap(root.FieldValue) {
+				// If we are in an uncompressed schema, then we have one more level of the data tree than
+				// the YANG expects, since our data tree layout is:
+				// struct (parent container)
+				//  --> map (the list)
+				//  --> struct (the list member)
+				//
+				// In YANG, .. from the list member struct gets us to the parent container, but for us
+				// we have only reached the map. This means that we end up over-consuming the ".."s. To
+				// avoid this issue, if we are in an uncompressed schema, and in a list, and we find
+				// that we're looking at the map, we consume another level of the data tree. This gets
+				// us to the parent container with ".." as would be expected.
+				//
+				// This is NOT required for the compressed schema, because in this case, we have removed
+				// a level of the data tree. So the parent container in the above example will have been
+				// removed. This is enforced by ygen. In this case, we do want to consume the extra level
+				// of ..s in the list case, such that we do not end up under-consuming them.
+				root = root.Parent
+				continue
+			} else {
+				path.Elem = removeParentDirPrefix(path.GetElem(), root.PathFromParent)
+				util.DbgPrint("going up data tree from type %s to %s, schema path from parent is %v, remaining path %v",
+					root.FieldValue.Type(), root.Parent.FieldValue.Type(), root.PathFromParent, path)
+				root = root.Parent
+			}
 		}
 	}
 
@@ -244,7 +271,7 @@ func matchesNodes(ni *util.NodeInfo, matchNodes []interface{}) (bool, error) {
 			ov := reflect.ValueOf(other)
 			switch {
 			case util.IsValueScalar(ov):
-				util.DbgPrint("comparing leafref values %s vs %s", util.ValueStr(sourceNode), util.ValueStr(other))
+				util.DbgPrint("comparing leafref values %s vs %s", util.ValueStrDebug(sourceNode), util.ValueStrDebug(other))
 				if util.DeepEqualDerefPtrs(sourceNode, other) {
 					util.DbgPrint("values are equal")
 					match = true
@@ -252,13 +279,22 @@ func matchesNodes(ni *util.NodeInfo, matchNodes []interface{}) (bool, error) {
 				}
 			case util.IsValueSlice(ov):
 				sourceNode := ni.FieldValue.Interface()
-				util.DbgPrint("checking whether value %s is leafref leaf-list %v", util.ValueStr(sourceNode), util.ValueStr(other))
+				util.DbgPrint("checking whether value %s is leafref leaf-list %v", util.ValueStrDebug(sourceNode), util.ValueStrDebug(other))
 				for i := 0; i < ov.Len(); i++ {
 					if util.DeepEqualDerefPtrs(sourceNode, ov.Index(i).Interface()) {
 						util.DbgPrint("value exists in list")
 						match = true
 						break
 					}
+				}
+			case util.IsValueStructPtr(ov):
+				// TODO(robjs): clean this up.
+				// This is an interface value, which is represented as a struct pointer.
+				ovv := ov.Elem().FieldByIndex([]int{0})
+				svv := ni.FieldValue.Elem().Elem().FieldByIndex([]int{0})
+				if reflect.DeepEqual(ovv.Interface(), svv.Interface()) {
+					match = true
+					break
 				}
 			}
 		}

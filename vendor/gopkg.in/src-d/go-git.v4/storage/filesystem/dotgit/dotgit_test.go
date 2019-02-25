@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/src-d/go-billy.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 
 	. "gopkg.in/check.v1"
@@ -56,11 +57,26 @@ func (s *SuiteDotGit) TestSetRefs(c *C) {
 	fs := osfs.New(tmp)
 	dir := New(fs)
 
+	testSetRefs(c, dir)
+}
+
+func (s *SuiteDotGit) TestSetRefsNorwfs(c *C) {
+	tmp, err := ioutil.TempDir("", "dot-git")
+	c.Assert(err, IsNil)
+	defer os.RemoveAll(tmp)
+
+	fs := osfs.New(tmp)
+	dir := New(&norwfs{fs})
+
+	testSetRefs(c, dir)
+}
+
+func testSetRefs(c *C, dir *DotGit) {
 	firstFoo := plumbing.NewReferenceFromStrings(
 		"refs/heads/foo",
 		"e8d3ffab552895c19b9fcf7aa264d277cde33881",
 	)
-	err = dir.SetRef(firstFoo, nil)
+	err := dir.SetRef(firstFoo, nil)
 
 	c.Assert(err, IsNil)
 
@@ -424,6 +440,18 @@ func (s *SuiteDotGit) TestObjectPacks(c *C) {
 	fs := f.DotGit()
 	dir := New(fs)
 
+	testObjectPacks(c, fs, dir, f)
+}
+
+func (s *SuiteDotGit) TestObjectPacksExclusive(c *C) {
+	f := fixtures.Basic().ByTag(".git").One()
+	fs := f.DotGit()
+	dir := NewWithOptions(fs, Options{ExclusiveAccess: true})
+
+	testObjectPacks(c, fs, dir, f)
+}
+
+func testObjectPacks(c *C, fs billy.Filesystem, dir *DotGit, f *fixtures.Fixture) {
 	hashes, err := dir.ObjectPacks()
 	c.Assert(err, IsNil)
 	c.Assert(hashes, HasLen, 1)
@@ -450,6 +478,45 @@ func (s *SuiteDotGit) TestObjectPack(c *C) {
 	pack, err := dir.ObjectPack(f.PackfileHash)
 	c.Assert(err, IsNil)
 	c.Assert(filepath.Ext(pack.Name()), Equals, ".pack")
+}
+
+func (s *SuiteDotGit) TestObjectPackWithKeepDescriptors(c *C) {
+	f := fixtures.Basic().ByTag(".git").One()
+	fs := f.DotGit()
+	dir := NewWithOptions(fs, Options{KeepDescriptors: true})
+
+	pack, err := dir.ObjectPack(f.PackfileHash)
+	c.Assert(err, IsNil)
+	c.Assert(filepath.Ext(pack.Name()), Equals, ".pack")
+
+	// Move to an specific offset
+	pack.Seek(42, os.SEEK_SET)
+
+	pack2, err := dir.ObjectPack(f.PackfileHash)
+	c.Assert(err, IsNil)
+
+	// If the file is the same the offset should be the same
+	offset, err := pack2.Seek(0, os.SEEK_CUR)
+	c.Assert(err, IsNil)
+	c.Assert(offset, Equals, int64(42))
+
+	err = dir.Close()
+	c.Assert(err, IsNil)
+
+	pack2, err = dir.ObjectPack(f.PackfileHash)
+	c.Assert(err, IsNil)
+
+	// If the file is opened again its offset should be 0
+	offset, err = pack2.Seek(0, os.SEEK_CUR)
+	c.Assert(err, IsNil)
+	c.Assert(offset, Equals, int64(0))
+
+	err = pack2.Close()
+	c.Assert(err, IsNil)
+
+	err = dir.Close()
+	c.Assert(err, NotNil)
+
 }
 
 func (s *SuiteDotGit) TestObjectPackIdx(c *C) {
@@ -506,6 +573,17 @@ func (s *SuiteDotGit) TestObjects(c *C) {
 	fs := fixtures.ByTag(".git").ByTag("unpacked").One().DotGit()
 	dir := New(fs)
 
+	testObjects(c, fs, dir)
+}
+
+func (s *SuiteDotGit) TestObjectsExclusive(c *C) {
+	fs := fixtures.ByTag(".git").ByTag("unpacked").One().DotGit()
+	dir := NewWithOptions(fs, Options{ExclusiveAccess: true})
+
+	testObjects(c, fs, dir)
+}
+
+func testObjects(c *C, fs billy.Filesystem, dir *DotGit) {
 	hashes, err := dir.Objects()
 	c.Assert(err, IsNil)
 	c.Assert(hashes, HasLen, 187)
@@ -537,6 +615,57 @@ func (s *SuiteDotGit) TestObject(c *C) {
 		file.Name(), fs.Join("objects", "03", "db8e1fbe133a480f2867aac478fd866686d69e")),
 		Equals, true,
 	)
+	incomingHash := "9d25e0f9bde9f82882b49fe29117b9411cb157b7" //made up hash
+	incomingDirPath := fs.Join("objects", "incoming-123456")
+	incomingFilePath := fs.Join(incomingDirPath, incomingHash[0:2], incomingHash[2:40])
+	fs.MkdirAll(incomingDirPath, os.FileMode(0755))
+	fs.Create(incomingFilePath)
+
+	file, err = dir.Object(plumbing.NewHash(incomingHash))
+	c.Assert(err, IsNil)
+}
+
+func (s *SuiteDotGit) TestObjectStat(c *C) {
+	fs := fixtures.ByTag(".git").ByTag("unpacked").One().DotGit()
+	dir := New(fs)
+
+	hash := plumbing.NewHash("03db8e1fbe133a480f2867aac478fd866686d69e")
+	_, err := dir.ObjectStat(hash)
+	c.Assert(err, IsNil)
+	incomingHash := "9d25e0f9bde9f82882b49fe29117b9411cb157b7" //made up hash
+	incomingDirPath := fs.Join("objects", "incoming-123456")
+	incomingFilePath := fs.Join(incomingDirPath, incomingHash[0:2], incomingHash[2:40])
+	fs.MkdirAll(incomingDirPath, os.FileMode(0755))
+	fs.Create(incomingFilePath)
+
+	_, err = dir.ObjectStat(plumbing.NewHash(incomingHash))
+	c.Assert(err, IsNil)
+}
+
+func (s *SuiteDotGit) TestObjectDelete(c *C) {
+	fs := fixtures.ByTag(".git").ByTag("unpacked").One().DotGit()
+	dir := New(fs)
+
+	hash := plumbing.NewHash("03db8e1fbe133a480f2867aac478fd866686d69e")
+	err := dir.ObjectDelete(hash)
+	c.Assert(err, IsNil)
+
+	incomingHash := "9d25e0f9bde9f82882b49fe29117b9411cb157b7" //made up hash
+	incomingDirPath := fs.Join("objects", "incoming-123456")
+	incomingSubDirPath := fs.Join(incomingDirPath, incomingHash[0:2])
+	incomingFilePath := fs.Join(incomingSubDirPath, incomingHash[2:40])
+
+	err = fs.MkdirAll(incomingSubDirPath, os.FileMode(0755))
+	c.Assert(err, IsNil)
+
+	f, err := fs.Create(incomingFilePath)
+	c.Assert(err, IsNil)
+
+	err = f.Close()
+	c.Assert(err, IsNil)
+
+	err = dir.ObjectDelete(plumbing.NewHash(incomingHash))
+	c.Assert(err, IsNil)
 }
 
 func (s *SuiteDotGit) TestObjectNotFound(c *C) {
@@ -680,4 +809,12 @@ func (s *SuiteDotGit) TestAlternates(c *C) {
 		expectedPath = filepath.Join(resolvedPath, "rep2", ".git")
 	}
 	c.Assert(dotgits[1].fs.Root(), Equals, expectedPath)
+}
+
+type norwfs struct {
+	billy.Filesystem
+}
+
+func (f *norwfs) Capabilities() billy.Capability {
+	return billy.Capabilities(f.Filesystem) &^ billy.ReadAndWriteCapability
 }

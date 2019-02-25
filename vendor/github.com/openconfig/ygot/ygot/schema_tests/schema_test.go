@@ -17,7 +17,7 @@
 package schematest
 
 import (
-	"fmt"
+	"io/ioutil"
 	"testing"
 
 	"github.com/golang/protobuf/proto"
@@ -41,7 +41,7 @@ func TestBuildEmptyEthernet(t *testing.T) {
 	}
 
 	if diff := pretty.Compare(got, wantEmpty); diff != "" {
-		fmt.Printf("did not get expected output after BuildEmptyTree, diff(-got,+want):\n%s", diff)
+		t.Fatalf("did not get expected output after BuildEmptyTree, diff(-got,+want):\n%s", diff)
 	}
 
 	got.AutoNegotiate = ygot.Bool(true)
@@ -52,7 +52,7 @@ func TestBuildEmptyEthernet(t *testing.T) {
 	}
 
 	if diff := pretty.Compare(got, wantPruned); diff != "" {
-		fmt.Printf("did not get expected output after PruneEmptyBranches, diff(-got,+want):\n%s", diff)
+		t.Fatalf("did not get expected output after PruneEmptyBranches, diff(-got,+want):\n%s", diff)
 	}
 }
 
@@ -168,6 +168,24 @@ func TestDiff(t *testing.T) {
 				Val:  mustTypedValue("EXTERNAL"),
 			}},
 		},
+	}, {
+		desc:   "diff STP",
+		inOrig: &exampleoc.Device{},
+		inMod: func() *exampleoc.Device {
+			d := &exampleoc.Device{}
+			e := d.GetOrCreateStp().GetOrCreateGlobal()
+			e.EnabledProtocol = []exampleoc.E_OpenconfigSpanningTreeTypes_STP_PROTOCOL{
+				exampleoc.OpenconfigSpanningTreeTypes_STP_PROTOCOL_MSTP,
+				exampleoc.OpenconfigSpanningTreeTypes_STP_PROTOCOL_RSTP,
+			}
+			return d
+		}(),
+		want: &gnmipb.Notification{
+			Update: []*gnmipb.Update{{
+				Path: mustPath("/stp/global/config/enabled-protocol"),
+				Val:  mustTypedValue([]string{"MSTP", "RSTP"}),
+			}},
+		},
 	}}
 
 	for _, tt := range tests {
@@ -184,6 +202,48 @@ func TestDiff(t *testing.T) {
 				}
 
 				t.Fatalf("ygot.Diff(%#v, %#v); did not get expected diff output, diff(-got,+want):\n%s", tt.inOrig, tt.inMod, diff)
+			}
+		})
+	}
+}
+
+func TestJSONOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       *exampleoc.Device
+		wantFile string
+	}{{
+		name: "unset enumeration",
+		in: func() *exampleoc.Device {
+			d := &exampleoc.Device{}
+			acl := d.GetOrCreateAcl()
+			set := acl.GetOrCreateAclSet("set", exampleoc.OpenconfigAcl_ACL_TYPE_ACL_IPV6)
+			entry := set.GetOrCreateAclEntry(100)
+			entry.GetOrCreateIpv6().Protocol = &exampleoc.Acl_AclSet_AclEntry_Ipv6_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL{
+				exampleoc.OpenconfigPacketMatchTypes_IP_PROTOCOL_UNSET,
+			}
+			return d
+		}(),
+		wantFile: "testdata/unsetenum.json",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want, err := ioutil.ReadFile(tt.wantFile)
+			if err != nil {
+				t.Fatalf("cannot read wantfile, %v", err)
+			}
+
+			got, err := ygot.EmitJSON(tt.in, &ygot.EmitJSONConfig{Format: ygot.RFC7951})
+			if err != nil {
+				t.Fatalf("got unexpected error, %v", err)
+			}
+
+			if diff := pretty.Compare(string(got), string(want)); diff != "" {
+				if diffl, err := testutil.GenerateUnifiedDiff(string(got), string(want)); err == nil {
+					diff = diffl
+				}
+				t.Fatalf("did not get expected output, diff(-got,+want):\n%s", diff)
 			}
 		})
 	}

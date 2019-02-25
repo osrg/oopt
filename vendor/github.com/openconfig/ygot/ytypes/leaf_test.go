@@ -22,8 +22,11 @@ import (
 	"testing"
 
 	"github.com/kylelemons/godebug/pretty"
+	"github.com/openconfig/gnmi/errdiff"
 	"github.com/openconfig/goyang/pkg/yang"
 	"github.com/openconfig/ygot/ygot"
+
+	gpb "github.com/openconfig/gnmi/proto/gnmi"
 )
 
 var (
@@ -275,13 +278,13 @@ type Union1 interface {
 }
 
 type Union1String struct {
-	String *string
+	String string
 }
 
 func (Union1String) IsUnion1() {}
 
 type Union1Int16 struct {
-	Int16 *int16
+	Int16 int16
 }
 
 func (Union1Int16) IsUnion1() {}
@@ -409,12 +412,12 @@ func TestValidateLeafUnion(t *testing.T) {
 		{
 			desc:   "success string",
 			schema: unionContainerSchema,
-			val:    &UnionContainer{UnionField: &Union1String{String: ygot.String("aaa")}},
+			val:    &UnionContainer{UnionField: &Union1String{"aaa"}},
 		},
 		{
 			desc:   "success int16",
 			schema: unionContainerSchema,
-			val:    &UnionContainer{UnionField: &Union1Int16{Int16: ygot.Int16(1)}},
+			val:    &UnionContainer{UnionField: &Union1Int16{1}},
 		},
 		{
 			desc:   "success enum",
@@ -424,7 +427,7 @@ func TestValidateLeafUnion(t *testing.T) {
 		{
 			desc:    "bad regex",
 			schema:  unionContainerSchema,
-			val:     &UnionContainer{UnionField: &Union1String{String: ygot.String("bbb")}},
+			val:     &UnionContainer{UnionField: &Union1String{"bbb"}},
 			wantErr: true,
 		},
 		{
@@ -888,22 +891,25 @@ func TestRemoveXPATHPredicates(t *testing.T) {
 }
 
 type LeafContainerStruct struct {
-	Int8Leaf    *int8         `path:"int8-leaf"`
-	Uint8Leaf   *uint8        `path:"uint8-leaf"`
-	Int16Leaf   *int16        `path:"int16-leaf"`
-	Uint16Leaf  *uint16       `path:"uint16-leaf"`
-	Int32Leaf   *int32        `path:"int32-leaf"`
-	Uint32Leaf  *uint32       `path:"uint32-leaf"`
-	Int64Leaf   *int64        `path:"int64-leaf"`
-	Uint64Leaf  *uint64       `path:"uint64-leaf"`
-	StringLeaf  *string       `path:"string-leaf"`
-	BinaryLeaf  []byte        `path:"binary-leaf"`
-	BoolLeaf    *bool         `path:"bool-leaf"`
-	DecimalLeaf *float64      `path:"decimal-leaf"`
-	EnumLeaf    EnumType      `path:"enum-leaf"`
-	UnionLeaf   UnionLeafType `path:"union-leaf"`
-	UnionLeaf2  *string       `path:"union-leaf2"`
-	EmptyLeaf   YANGEmpty     `path:"empty-leaf"`
+	Int8Leaf            *int8           `path:"int8-leaf"`
+	Int8LeafList        []int8          `path:"int8-leaflist"`
+	Uint8Leaf           *uint8          `path:"uint8-leaf"`
+	Int16Leaf           *int16          `path:"int16-leaf"`
+	Uint16Leaf          *uint16         `path:"uint16-leaf"`
+	Int32Leaf           *int32          `path:"int32-leaf"`
+	Uint32Leaf          *uint32         `path:"uint32-leaf"`
+	Int64Leaf           *int64          `path:"int64-leaf"`
+	Uint64Leaf          *uint64         `path:"uint64-leaf"`
+	StringLeaf          *string         `path:"string-leaf"`
+	BinaryLeaf          []byte          `path:"binary-leaf"`
+	BoolLeaf            *bool           `path:"bool-leaf"`
+	DecimalLeaf         *float64        `path:"decimal-leaf"`
+	EnumLeaf            EnumType        `path:"enum-leaf"`
+	UnionLeaf           UnionLeafType   `path:"union-leaf"`
+	UnionLeaf2          *string         `path:"union-leaf2"`
+	EmptyLeaf           YANGEmpty       `path:"empty-leaf"`
+	UnionLeafSlice      []UnionLeafType `path:"union-leaflist"`
+	UnionLeafSingleType []string        `path:"union-stleaflist"`
 }
 
 type UnionLeafType interface {
@@ -944,7 +950,8 @@ func (*UnionLeafType_EnumType2) ΛMap() map[string]map[int64]ygot.EnumDefinition
 
 func (*LeafContainerStruct) ΛEnumTypeMap() map[string][]reflect.Type {
 	return map[string][]reflect.Type{
-		"/container-schema/union-leaf": {reflect.TypeOf(EnumType(0)), reflect.TypeOf(EnumType2(0))},
+		"/container-schema/union-leaf":     {reflect.TypeOf(EnumType(0)), reflect.TypeOf(EnumType2(0))},
+		"/container-schema/union-leaflist": {reflect.TypeOf(EnumType(0)), reflect.TypeOf(EnumType2(0))},
 	}
 }
 
@@ -963,7 +970,7 @@ func (*LeafContainerStruct) To_UnionLeafType(i interface{}) (UnionLeafType, erro
 	}
 }
 
-func TestUnmarshalLeaf(t *testing.T) {
+func TestUnmarshalLeafJSONEncoding(t *testing.T) {
 	tests := []struct {
 		desc    string
 		json    string
@@ -1059,6 +1066,31 @@ func TestUnmarshalLeaf(t *testing.T) {
 			desc: "union no struct success, correct type, value unvalidated",
 			json: `{"union-leaf2" : "ccc"}`,
 			want: LeafContainerStruct{UnionLeaf2: ygot.String("ccc")},
+		},
+		{
+			desc: "leaf-list of single type union success, single value",
+			json: `{"union-stleaflist": ["ccc"]}`,
+			want: LeafContainerStruct{UnionLeafSingleType: []string{"ccc"}},
+		},
+		{
+			desc: "leaf-list of single type union success, multi-value",
+			json: `{"union-stleaflist": ["ccc", "ddd"]}`,
+			want: LeafContainerStruct{UnionLeafSingleType: []string{"ccc", "ddd"}},
+		},
+		{
+			desc: "leaf-list of union success, single value",
+			json: `{"union-leaflist": ["E_VALUE_FORTY_THREE"]}`,
+			want: LeafContainerStruct{UnionLeafSlice: []UnionLeafType{&UnionLeafType_EnumType2{EnumType2: 43}}},
+		},
+		{
+			desc: "leaf-list of union success, multi-value",
+			json: `{"union-leaflist": ["E_VALUE_FORTY_THREE", "eeee"]}`,
+			want: LeafContainerStruct{
+				UnionLeafSlice: []UnionLeafType{
+					&UnionLeafType_EnumType2{EnumType2: 43},
+					&UnionLeafType_String{"eeee"},
+				},
+			},
 		},
 		{
 			desc:    "bad field",
@@ -1199,6 +1231,30 @@ func TestUnmarshalLeaf(t *testing.T) {
 		},
 	}
 
+	unionLeafListSchema := &yang.Entry{
+		Name:     "union-leaflist",
+		Kind:     yang.LeafEntry,
+		ListAttr: &yang.ListAttr{},
+		Type: &yang.YangType{
+			Kind: yang.Yunion,
+			Type: []*yang.YangType{
+				{
+					Kind:    yang.Ystring,
+					Pattern: []string{"a+"},
+				},
+				{
+					Kind: yang.Yuint32,
+				},
+				{
+					Kind: yang.Yenum,
+				},
+				{
+					Kind: yang.Yidentityref,
+				},
+			},
+		},
+	}
+
 	unionNoStructSchema := &yang.Entry{
 		Name: "union-leaf2",
 		Kind: yang.LeafEntry,
@@ -1219,6 +1275,34 @@ func TestUnmarshalLeaf(t *testing.T) {
 		},
 	}
 
+	unionSTLeafListSchema := &yang.Entry{
+		Name:     "union-stleaflist",
+		Kind:     yang.LeafEntry,
+		ListAttr: &yang.ListAttr{},
+		Type: &yang.YangType{
+			Kind: yang.Yunion,
+			Type: []*yang.YangType{
+				{
+					// Note that Validate is not called as part of Unmarshal,
+					// therefore any string pattern will actually match.
+					Kind:    yang.Ystring,
+					Pattern: []string{"a+"},
+				},
+				{
+					Kind:    yang.Ystring,
+					Pattern: []string{"b+"},
+				},
+			},
+		},
+	}
+
+	leafListSchema := &yang.Entry{
+		Name:     "int8-leaflist",
+		Kind:     yang.LeafEntry,
+		Type:     &yang.YangType{Kind: yang.Yint8},
+		ListAttr: &yang.ListAttr{MinElements: &yang.Value{Name: "0"}},
+	}
+
 	var leafSchemas = []*yang.Entry{
 		typeToLeafSchema("int8-leaf", yang.Yint8),
 		typeToLeafSchema("uint8-leaf", yang.Yuint8),
@@ -1236,6 +1320,9 @@ func TestUnmarshalLeaf(t *testing.T) {
 		enumLeafSchema,
 		unionSchema,
 		unionNoStructSchema,
+		unionLeafListSchema,
+		unionSTLeafListSchema,
+		leafListSchema,
 	}
 
 	for _, s := range leafSchemas {
@@ -1273,24 +1360,24 @@ func TestUnmarshalLeaf(t *testing.T) {
 	}
 	// Additional tests through private API.
 	// bad parent type
-	err = unmarshalUnion(containerSchema, LeafContainerStruct{}, "int8-leaf", 42)
+	err = unmarshalUnion(containerSchema, LeafContainerStruct{}, "int8-leaf", 42, JSONEncoding)
 	wantErr = `ytypes.LeafContainerStruct is not a struct ptr in unmarshalUnion`
 	if got, want := errToString(err), wantErr; got != want {
 		t.Errorf("bad parent type: Unmarshal got error: %v, want error: %v", got, want)
 	}
-	if err := unmarshalLeaf(nil, nil, nil); err != nil {
+	if err := unmarshalLeaf(nil, nil, nil, JSONEncoding); err != nil {
 		t.Errorf("nil value: got error: %v, want error: nil", err)
 	}
-	if err := unmarshalLeaf(nil, nil, map[string]interface{}{}); err == nil {
+	if err := unmarshalLeaf(nil, nil, map[string]interface{}{}, JSONEncoding); err == nil {
 		t.Errorf("nil schema: got error: nil, want nil schema error")
 	}
-	if err := unmarshalLeaf(enumLeafSchema, LeafContainerStruct{}, map[string]interface{}{}); err == nil {
+	if err := unmarshalLeaf(enumLeafSchema, LeafContainerStruct{}, map[string]interface{}{}, JSONEncoding); err == nil {
 		t.Errorf("bad schema: got error: nil, want nil schema error")
 	}
-	if _, err := unmarshalScalar(nil, nil, "", nil); err != nil {
+	if _, err := unmarshalScalar(nil, nil, "", nil, JSONEncoding); err != nil {
 		t.Errorf("nil value: got error: %v, want error: nil", err)
 	}
-	if _, err := unmarshalScalar(nil, nil, "", 42); err == nil {
+	if _, err := unmarshalScalar(nil, nil, "", 42, JSONEncoding); err == nil {
 		t.Errorf("nil schema: got error: nil, want nil schema error")
 	}
 }
@@ -1499,5 +1586,262 @@ func TestFindLeafRefSchema(t *testing.T) {
 				t.Errorf("%s: findLeafRefSchema(%v, %s): did not get expected entry, diff(-got,+want):\n%s", tt.desc, tt.inSchema, tt.inPathStr, diff)
 			}
 		})
+	}
+}
+
+func TestUnmarshalLeafGNMIEncoding(t *testing.T) {
+	containerSchema := &yang.Entry{
+		Name: "container-schema",
+		Kind: yang.DirectoryEntry,
+		Dir: map[string]*yang.Entry{
+			"leaf": {
+				Name: "leaf",
+				Kind: yang.LeafEntry,
+				Type: &yang.YangType{
+					Kind:    yang.Ystring,
+					Pattern: []string{"b+"},
+				},
+			},
+		},
+	}
+	unionSchema := &yang.Entry{
+		Parent: containerSchema,
+		Name:   "union-leaf",
+		Kind:   yang.LeafEntry,
+		Type: &yang.YangType{
+			Kind: yang.Yunion,
+			Type: []*yang.YangType{
+				{
+					Kind:    yang.Ystring,
+					Pattern: []string{"a+"},
+				},
+				{
+					Kind: yang.Yuint32,
+				},
+				{
+					Kind: yang.Yenum,
+				},
+				{
+					Kind: yang.Yidentityref,
+				},
+				{
+					Kind: yang.Yleafref,
+					Path: "../leaf",
+				},
+			},
+		},
+	}
+
+	leafListSchema := &yang.Entry{
+		Parent:   containerSchema,
+		Name:     "int8-leaflist",
+		Kind:     yang.LeafEntry,
+		Type:     &yang.YangType{Kind: yang.Yint8},
+		ListAttr: &yang.ListAttr{MinElements: &yang.Value{Name: "0"}},
+	}
+
+	tests := []struct {
+		desc     string
+		inSchema *yang.Entry
+		inVal    interface{}
+		wantVal  interface{}
+		wantErr  string
+	}{
+		{
+			desc:     "success gNMI BoolVal to Ybool",
+			inSchema: typeToLeafSchema("bool-leaf", yang.Ybool),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_BoolVal{
+					BoolVal: true,
+				},
+			},
+			wantVal: &LeafContainerStruct{BoolLeaf: ygot.Bool(true)},
+		},
+		{
+			desc:     "success gNMI StringVal to Ystring",
+			inSchema: typeToLeafSchema("string-leaf", yang.Ystring),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_StringVal{
+					StringVal: "forty two",
+				},
+			},
+			wantVal: &LeafContainerStruct{StringLeaf: ygot.String("forty two")},
+		},
+		{
+			desc:     "success gNMI StringVal to Yenum",
+			inSchema: typeToLeafSchema("enum-leaf", yang.Yenum),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_StringVal{
+					StringVal: "E_VALUE_FORTY_TWO",
+				},
+			},
+			wantVal: &LeafContainerStruct{EnumLeaf: EnumType(42)},
+		},
+		{
+			desc:     "fail gNMI StringVal to Ystring due to missing StringVal in TypedValue",
+			inSchema: typeToLeafSchema("string-leaf", yang.Ystring),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_IntVal{
+					IntVal: 42,
+				},
+			},
+			wantErr: "failed to unmarshal &{42} into string",
+		},
+		{
+			desc:     "success gNMI IntVal to Yint8",
+			inSchema: typeToLeafSchema("int8-leaf", yang.Yint8),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_IntVal{
+					IntVal: 42,
+				},
+			},
+			wantVal: &LeafContainerStruct{Int8Leaf: ygot.Int8(42)},
+		},
+		{
+			desc:     "success gNMI IntVal to Yint64",
+			inSchema: typeToLeafSchema("int64-leaf", yang.Yint64),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_IntVal{
+					IntVal: 4242,
+				},
+			},
+			wantVal: &LeafContainerStruct{Int64Leaf: ygot.Int64(4242)},
+		},
+		{
+			desc:     "fail gNMI IntVal to Yint8 due to overflow",
+			inSchema: typeToLeafSchema("int8-leaf", yang.Yint8),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_IntVal{
+					IntVal: 4242,
+				},
+			},
+			wantErr: `StringToType("4242", int8) failed; unable to convert "4242" to int8`,
+		},
+		{
+			desc:     "success gNMI IntVal to Yuint8",
+			inSchema: typeToLeafSchema("uint8-leaf", yang.Yuint8),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_UintVal{
+					UintVal: 42,
+				},
+			},
+			wantVal: &LeafContainerStruct{Uint8Leaf: ygot.Uint8(42)},
+		},
+		{
+			desc:     "success gNMI IntVal to Yuint64",
+			inSchema: typeToLeafSchema("uint64-leaf", yang.Yuint64),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_UintVal{
+					UintVal: 42,
+				},
+			},
+			wantVal: &LeafContainerStruct{Uint64Leaf: ygot.Uint64(42)},
+		},
+		{
+			desc:     "fail gNMI UintVal to Yuint8 due to overflow",
+			inSchema: typeToLeafSchema("uint8-leaf", yang.Yuint8),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_UintVal{
+					UintVal: 4242,
+				},
+			},
+			wantErr: `StringToType("4242", uint8) failed; unable to convert "4242" to uint8`,
+		},
+		{
+			desc:     "success gNMI FloatVal to Ydecimal64",
+			inSchema: typeToLeafSchema("decimal-leaf", yang.Ydecimal64),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_FloatVal{
+					FloatVal: 42.42,
+				},
+			},
+			// FloatVal above is casted to a float64 in sanitizeGNMI which changes the
+			// precision. In wantVal, same operation is done to match the value.
+			wantVal: &LeafContainerStruct{DecimalLeaf: ygot.Float64(float64(float32(42.42)))},
+		},
+		{
+			desc:     "success gNMI Decimal64 to Ydecimal64",
+			inSchema: typeToLeafSchema("decimal-leaf", yang.Ydecimal64),
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_DecimalVal{
+					DecimalVal: &gpb.Decimal64{Digits: 42, Precision: 2},
+				},
+			},
+			wantVal: &LeafContainerStruct{DecimalLeaf: ygot.Float64(0.42)},
+		},
+		{
+			desc:     "success unmarshalling union leaf string field",
+			inSchema: unionSchema,
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_StringVal{
+					StringVal: "forty two",
+				},
+			},
+			wantVal: &LeafContainerStruct{UnionLeaf: &UnionLeafType_String{String: "forty two"}},
+		},
+		{
+			desc:     "success unmarshalling union leaf enum field",
+			inSchema: unionSchema,
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_StringVal{
+					StringVal: "E_VALUE_FORTY_TWO",
+				},
+			},
+			wantVal: &LeafContainerStruct{UnionLeaf: &UnionLeafType_EnumType{EnumType: 42}},
+		},
+		{
+			desc:     "success unmarshalling int8 leaf list field with TypedValue_LeaflistVal",
+			inSchema: leafListSchema,
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_LeaflistVal{
+					LeaflistVal: &gpb.ScalarArray{
+						Element: []*gpb.TypedValue{
+							{Value: &gpb.TypedValue_IntVal{IntVal: 42}},
+							{Value: &gpb.TypedValue_IntVal{IntVal: 43}},
+						},
+					},
+				},
+			},
+			wantVal: &LeafContainerStruct{Int8LeafList: []int8{42, 43}},
+		},
+		{
+			desc:     "fail unmarshalling int8 leaf list field with incorrect type",
+			inSchema: leafListSchema,
+			inVal:    "forty two",
+			wantErr:  "got type string, expect *gpb.TypedValue",
+		},
+		{
+			desc:     "fail unmarshalling int8 leaf list field with TypedValue_IntVal",
+			inSchema: leafListSchema,
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_IntVal{
+					IntVal: 42,
+				},
+			},
+			wantErr: "expect *gpb.TypedValue_LeaflistVal set in *gpb.TypedValue",
+		},
+		{
+			desc:     "fail unmarshalling int8 leaf list field with TypedValue_StringVal",
+			inSchema: leafListSchema,
+			inVal: &gpb.TypedValue{
+				Value: &gpb.TypedValue_StringVal{
+					StringVal: "forty two",
+				},
+			},
+			wantErr: "expect *gpb.TypedValue_LeaflistVal set in *gpb.TypedValue",
+		},
+	}
+	for _, tt := range tests {
+		inParent := &LeafContainerStruct{}
+		err := unmarshalGeneric(tt.inSchema, inParent, tt.inVal, GNMIEncoding)
+		if diff := errdiff.Substring(err, tt.wantErr); diff != "" {
+			t.Errorf("%s: unmarshalLeaf(%v, %v, %v, GNMIEncoding): %v", tt.desc, tt.inSchema, inParent, tt.inVal, diff)
+		}
+		if err != nil {
+			continue
+		}
+		if !reflect.DeepEqual(inParent, tt.wantVal) {
+			t.Errorf("%s: unmarshalLeaf(%v, %v, %v, GNMIEncoding): got %v, want %v", tt.desc, tt.inSchema, inParent, tt.inVal, inParent, tt.wantVal)
+		}
 	}
 }

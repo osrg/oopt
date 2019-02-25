@@ -94,11 +94,13 @@ type isExtension_Ext interface {
 type Extension_RegisteredExt struct {
 	RegisteredExt *RegisteredExtension `protobuf:"bytes,1,opt,name=registered_ext,json=registeredExt,proto3,oneof"`
 }
+
 type Extension_MasterArbitration struct {
 	MasterArbitration *MasterArbitration `protobuf:"bytes,2,opt,name=master_arbitration,json=masterArbitration,proto3,oneof"`
 }
 
-func (*Extension_RegisteredExt) isExtension_Ext()     {}
+func (*Extension_RegisteredExt) isExtension_Ext() {}
+
 func (*Extension_MasterArbitration) isExtension_Ext() {}
 
 func (m *Extension) GetExt() isExtension_Ext {

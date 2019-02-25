@@ -268,6 +268,15 @@ func TestValidateListSimpleKey(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			desc: "mismatched key",
+			val: map[string]*StringListElemStruct{
+				"fish": {
+					KeyFieldName: ygot.String("chips"),
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -363,6 +372,16 @@ func TestValidateListStructKey(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			desc: "mismatched key",
+			val: map[KeyStruct]*StringListElemStruct{
+				{"fish", 1}: {
+					Key1: ygot.String("chips"),
+					Key2: ygot.Int32(2),
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -378,25 +397,25 @@ func TestValidateListStructKey(t *testing.T) {
 
 func TestUnmarshalList(t *testing.T) {
 	// nil value
-	if got := unmarshalList(nil, nil, nil); got != nil {
+	if got := unmarshalList(nil, nil, nil, JSONEncoding); got != nil {
 		t.Errorf("nil value: Unmarshal got error: %v, want error: nil", got)
 	}
 
 	// nil schema
 	wantErr := `list schema is nil`
-	if got, want := errToString(unmarshalList(nil, nil, []struct{}{})), wantErr; got != want {
+	if got, want := errToString(unmarshalList(nil, nil, []struct{}{}, JSONEncoding)), wantErr; got != want {
 		t.Errorf("nil schema: Unmarshal got error: %v, want error: %v", got, want)
 	}
 
 	// bad parent type
 	wantErr = `unmarshalList for valid-list-schema got parent type struct, expect map, slice ptr or struct ptr`
-	if got, want := errToString(unmarshalList(validListSchema, struct{}{}, []interface{}{})), wantErr; got != want {
+	if got, want := errToString(unmarshalList(validListSchema, struct{}{}, []interface{}{}, JSONEncoding)), wantErr; got != want {
 		t.Errorf("nil schema: Unmarshal got error: %v, want error: %v", got, want)
 	}
 
 	// bad value type
 	wantErr = `unmarshalContainer for schema valid-list-schema: jsonTree 42 (int): got type int inside container, expect map[string]interface{}`
-	if got, want := errToString(unmarshalList(validListSchema, &struct{}{}, int(42))), wantErr; got != want {
+	if got, want := errToString(unmarshalList(validListSchema, &struct{}{}, int(42), JSONEncoding)), wantErr; got != want {
 		t.Errorf("nil schema: Unmarshal got error: %v, want error: %v", got, want)
 	}
 
@@ -1251,5 +1270,135 @@ func TestInsertAndGetKey(t *testing.T) {
 				t.Errorf("got %v, want %v", val, tt.want)
 			}
 		})
+	}
+}
+
+type unionKeyTestStruct struct {
+	UnionKey map[Union1]*unionKeyTestStructChild `path:"union-key"`
+}
+
+func (*unionKeyTestStruct) IsYANGGoStruct() {}
+
+type unionKeyTestStructChild struct {
+	Key Union1 `path:"key"`
+}
+
+func (*unionKeyTestStructChild) IsYANGGoStruct() {}
+
+func (*unionKeyTestStructChild) ΛEnumTypeMap() map[string][]reflect.Type {
+	return map[string][]reflect.Type{
+		"/union-key/key": {reflect.TypeOf(EnumType(0))},
+	}
+}
+
+func (*unionKeyTestStructChild) To_Union1(i interface{}) (Union1, error) {
+	switch v := i.(type) {
+	case string:
+		return &Union1String{v}, nil
+	case int16:
+		return &Union1Int16{v}, nil
+	case EnumType:
+		return &Union1EnumType{v}, nil
+	default:
+		return nil, fmt.Errorf("cannot convert %v to Union1, unknown union type, got: %T, want any of [string, int16, enum]", i, i)
+	}
+}
+
+func TestUnmarshalUnionKeyedList(t *testing.T) {
+	schema := &yang.Entry{
+		Name: "union-key-test-struct",
+		Kind: yang.DirectoryEntry,
+		Dir: map[string]*yang.Entry{
+			"union-key": {
+				Name:     "union-key",
+				Kind:     yang.DirectoryEntry,
+				ListAttr: &yang.ListAttr{},
+				Key:      "key",
+				Dir: map[string]*yang.Entry{
+					"key": {
+						Name: "key",
+						Kind: yang.LeafEntry,
+						Type: &yang.YangType{
+							Kind: yang.Yunion,
+							Type: []*yang.YangType{
+								{
+									Name: "enum",
+									Kind: yang.Yenum,
+								},
+								{
+									Name:    "string",
+									Kind:    yang.Ystring,
+									Pattern: []string{"a+"},
+								},
+								{
+									Name: "int16",
+									Kind: yang.Yint16,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		inParent         ygot.GoStruct
+		inSchema         *yang.Entry
+		inUnmarshalOpts  []UnmarshalOpt
+		inJSON           string
+		wantErrSubstring string
+	}{{
+		name:     "union with enum value key",
+		inParent: &unionKeyTestStruct{},
+		inSchema: schema,
+		inJSON: `{
+					"union-key": [
+						{
+							"key": "E_VALUE_FORTY_TWO"
+						}
+					]
+				 }`,
+	}, {
+		name:     "union with string and int16 key",
+		inParent: &unionKeyTestStruct{},
+		inSchema: schema,
+		inJSON: `{
+					"union-key": [
+						{
+							"key": 42
+						},
+						{
+							"key": "hello"
+						}
+					]
+				}`,
+	}, {
+		name:     "bad enum type",
+		inParent: &unionKeyTestStruct{},
+		inSchema: schema,
+		inJSON: `{
+					"union-key": [
+						{
+							"key": 4294967296
+						}
+					]
+				}`,
+		wantErrSubstring: "could not find suitable union type to unmarshal value",
+	}}
+
+	for _, tt := range tests {
+
+		js := map[string]interface{}{}
+		if err := json.Unmarshal([]byte(tt.inJSON), &js); err != nil {
+			t.Errorf("%s: json.Unmarshal(%v): got unexpected error, %v", tt.name, tt.inJSON, err)
+			continue
+		}
+
+		err := Unmarshal(tt.inSchema, tt.inParent, js, tt.inUnmarshalOpts...)
+		if diff := errdiff.Substring(err, tt.wantErrSubstring); diff != "" {
+			t.Errorf("%s: Unmarshal(%v, %v, %v): did not get expected error, %s", tt.name, tt.inSchema, tt.inParent, tt.inUnmarshalOpts, diff)
+		}
 	}
 }

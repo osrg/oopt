@@ -83,6 +83,12 @@ type genState struct {
 	// where two entities re-use a union that has already been created (e.g.,
 	// a leafref to a union) then it is output only once in the generated code.
 	generatedUnions map[string]bool
+	// generatedUnionInterface stores a map of maps that store the To_XXX methods
+	// that have been built for a particular receiver struct. These methods are
+	// generated as helpers for union types, and must be output once per receiver
+	// struct in which they are used. The first map is keyed on the receiver type,
+	// whilst the latter is keyed on the interface name.
+	generatedUnionInterfaces map[string]map[string]bool
 }
 
 // newGenState creates a new genState instance, initialised with the default state
@@ -102,6 +108,7 @@ func newGenState() *genState {
 		uniqueProtoMsgNames:          make(map[string]map[string]bool),
 		uniqueProtoPackages:          make(map[string]string),
 		generatedUnions:              make(map[string]bool),
+		generatedUnionInterfaces:     make(map[string]map[string]bool),
 	}
 }
 
@@ -389,7 +396,7 @@ func (s *genState) resolveIdentityRefBaseType(idr *yang.Entry, noUnderscores boo
 // from the name returned such that the enumerated type name is compliant with
 // language styles where underscores are not allowed in names.
 func (s *genState) identityrefBaseTypeFromIdentity(i *yang.Identity, noUnderscores bool) string {
-	definingModName := parentModuleName(i)
+	definingModName := parentModulePrettyName(i)
 
 	// As per a typedef that includes an enumeration, there is a many to one
 	// relationship between leaves and an identity value, therefore, we want to
@@ -431,11 +438,11 @@ func (s *genState) resolveEnumName(e *yang.Entry, compressPaths, noUnderscores b
 	//
 	// The path that is used for the enumeration is therefore taking the goyang
 	// "Node" hierarchy - we walk back up the tree until such time as we find
-	// a node that is not within the same module (parentModuleName(parent) !=
-	// parentModuleName(currentNode)), and use this as the unique path.
-	definingModName := parentModuleName(e.Node)
+	// a node that is not within the same module (parentModulePrettyName(parent) !=
+	// parentModulePrettyName(currentNode)), and use this as the unique path.
+	definingModName := parentModulePrettyName(e.Node)
 	var identifierPathElem []string
-	for elem := e.Node; elem.ParentNode() != nil && parentModuleName(elem) == definingModName; elem = elem.ParentNode() {
+	for elem := e.Node; elem.ParentNode() != nil && parentModulePrettyName(elem) == definingModName; elem = elem.ParentNode() {
 		identifierPathElem = append(identifierPathElem, elem.NName())
 	}
 
@@ -444,6 +451,20 @@ func (s *genState) resolveEnumName(e *yang.Entry, compressPaths, noUnderscores b
 	var identifierPath string
 	for i := len(identifierPathElem) - 1; i >= 0; i-- {
 		identifierPath = fmt.Sprintf("%s/%s", identifierPath, identifierPathElem[i])
+	}
+
+	// For leaves that have an enumeration within a typedef that is within a union,
+	// we do not want to just use the place in the schema definition for de-duplication,
+	// since it becomes confusing for the user to have non-contextual names within
+	// this context. We therefore rewrite the identifier path to have the context
+	// that we are in. By default, we just use the name of the node, but in OpenConfig
+	// schemas we rely on the grandparent name.
+	if !isYANGBaseType(e.Type) {
+		idPfx := e.Name
+		if compressPaths && e.Parent != nil && e.Parent.Parent != nil {
+			idPfx = e.Parent.Parent.Name
+		}
+		identifierPath = fmt.Sprintf("%s%s", idPfx, identifierPath)
 	}
 
 	// If the leaf had already been encountered, then return the previously generated
@@ -458,8 +479,7 @@ func (s *genState) resolveEnumName(e *yang.Entry, compressPaths, noUnderscores b
 		// State or Config so would not be unique. The proposed name is
 		// handed to makeNameUnique to ensure that it does not clash with
 		// other defined names.
-		name := fmt.Sprintf("%s_%s_%s", yang.CamelCase(definingModName),
-			yang.CamelCase(e.Parent.Parent.Name), yang.CamelCase(e.Name))
+		name := fmt.Sprintf("%s_%s_%s", yang.CamelCase(definingModName), yang.CamelCase(e.Parent.Parent.Name), yang.CamelCase(e.Name))
 		if noUnderscores {
 			name = strings.Replace(name, "_", "", -1)
 		}
@@ -512,7 +532,7 @@ func (s *genState) resolveTypedefEnumeratedName(e *yang.Entry, noUnderscores boo
 		return "", fmt.Errorf("nil Node in enum type %s", e.Name)
 	}
 
-	definingModName := parentModuleName(e.Node)
+	definingModName := parentModulePrettyName(e.Node)
 	// Since there can be many leaves that refer to the same typedef, then we do not generate
 	// a name for each of them, but rather use a common name, we use the non-CamelCase lookup
 	// as this is unique, whereas post-camelisation, we may have name clashes. Since a typedef
@@ -547,7 +567,7 @@ func (s *genState) enumeratedTypedefTypeName(args resolveTypeArgs, prefix string
 	// types which is defined in RFC6020/RFC7950) then we establish what the type
 	// that we must actually perform the mapping for is. By default, start with
 	// the type that is specified in the schema.
-	if _, builtin := yang.TypeKindFromName[args.yangType.Name]; !builtin {
+	if !isYANGBaseType(args.yangType) {
 		switch args.yangType.Kind {
 		case yang.Yenum, yang.Yidentityref:
 			// In the case of a typedef that specifies an enumeration or identityref
