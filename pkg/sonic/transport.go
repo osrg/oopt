@@ -108,7 +108,7 @@ func HandleOptDiff(name string, task []DiffTask) error {
 	return client.ModEntry(CONFIG_TABLE, name, entry)
 }
 
-func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule) error {
+func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule, current *model.PacketTransponder) error {
 	if t.OpticalModuleFrequency == nil {
 		t.OpticalModuleFrequency = &model.PacketTransponder_OpticalModule_OpticalModuleFrequency{}
 	}
@@ -133,6 +133,13 @@ func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule) error 
 	}
 	if t.Enabled == nil {
 		t.Enabled = ygot.Bool(true)
+	}
+	if t.AllowOversubscription == nil {
+		a := ygot.Bool(false)
+		if current.AllowOversubscription != nil {
+			a = current.AllowOversubscription
+		}
+		t.AllowOversubscription = a
 	}
 	return nil
 }
@@ -272,7 +279,7 @@ func ConfigureTransport(m *model.PacketTransponder) error {
 		if err != nil {
 			return err
 		}
-		if err = FillTransportDefaultConfig(v); err != nil {
+		if err = FillTransportDefaultConfig(v, m); err != nil {
 			return err
 		}
 

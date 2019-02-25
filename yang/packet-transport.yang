@@ -48,6 +48,14 @@ module packet-transport {
         }
     }
 
+    grouping packet-transponder-config {
+        leaf allow-oversubscription {
+            description "when true, allow the sum of client ports capacity exceeds line capacity";
+            type boolean;
+            default false;
+        }
+    }
+
     grouping port-config {
         leaf name {
             type string;
@@ -145,6 +153,11 @@ module packet-transport {
         }
 
         leaf losi {
+            type boolean;
+        }
+
+        leaf allow-oversubscription {
+            description "when true, allow the sum of client ports capacity exceeds line capacity. This config surpasses packet-transponder-config/allow-oversubscription. When not set, packet-transponder-config/allow-oversubscription will be used";
             type boolean;
         }
     }
@@ -294,6 +307,15 @@ module packet-transport {
                 }
 
             }
+        }
+
+        container config {
+            uses packet-transponder-config;
+        }
+
+        container state {
+            config false;
+            uses packet-transponder-config;
         }
     }
 

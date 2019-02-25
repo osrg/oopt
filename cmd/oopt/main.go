@@ -69,7 +69,7 @@ func RemoveContents(dir string) error {
 
 func fillDefaultValues(m *model.PacketTransponder) error {
 	for _, o := range m.OpticalModule {
-		if err := sonic.FillTransportDefaultConfig(o); err != nil {
+		if err := sonic.FillTransportDefaultConfig(o, current); err != nil {
 			return err
 		}
 	}
@@ -203,6 +203,8 @@ func handleDiff(newConfig, oldConfig *model.PacketTransponder, diff *gnmipb.Noti
 			taskMap = intfDiffTask
 		case "ports":
 			taskMap = portDiffTask
+		default:
+			continue
 		}
 		name := n.Key["name"]
 		task, ok := taskMap[name]
@@ -223,6 +225,8 @@ func handleDiff(newConfig, oldConfig *model.PacketTransponder, diff *gnmipb.Noti
 			taskMap = intfDiffTask
 		case "ports":
 			taskMap = portDiffTask
+		default:
+			continue
 		}
 		name := n.Key["name"]
 		task, ok := taskMap[name]
@@ -868,6 +872,34 @@ func NewOpticalModuleCmd() *cobra.Command {
 		},
 	}
 
+	clearAllowOversubscriptionCmd := &cobra.Command{
+		Use:  "clear",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			current.OpticalModule[name].AllowOversubscription = nil
+			return nil
+		},
+	}
+
+	allowOversubscriptionCmd := &cobra.Command{
+		Use:       "allow-oversubscription",
+		ValidArgs: []string{"true", "false"},
+		Args:      cobra.OnlyValidArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("invalid usage")
+			}
+			if args[0] == "true" {
+				current.OpticalModule[name].AllowOversubscription = ygot.Bool(true)
+			} else {
+				current.OpticalModule[name].AllowOversubscription = ygot.Bool(false)
+			}
+			return nil
+		},
+	}
+
+	allowOversubscriptionCmd.AddCommand(clearAllowOversubscriptionCmd)
+
 	mods := make([]string, 0, len(model.ΛEnum["E_PacketTransport_OpticalModulationType"]))
 
 	for _, v := range model.ΛEnum["E_PacketTransport_OpticalModulationType"] {
@@ -911,13 +943,15 @@ func NewOpticalModuleCmd() *cobra.Command {
 			}
 			module := o.(*model.PacketTransponder_OpticalModule)
 			if verbose {
-				if err := sonic.FillTransportDefaultConfig(module); err != nil {
+				if err := sonic.FillTransportDefaultConfig(module, current); err != nil {
 					return err
 				}
 			}
-			err = sonic.FillTransportState(name, module)
-			if err != nil {
-				return err
+			if !dry {
+				err = sonic.FillTransportState(name, module)
+				if err != nil {
+					return err
+				}
 			}
 			json, err := ygot.EmitJSON(module, nil)
 			if err != nil {
@@ -977,7 +1011,7 @@ func NewOpticalModuleCmd() *cobra.Command {
 			}
 			module := o.(*model.PacketTransponder_OpticalModule)
 			if verbose {
-				if err := sonic.FillTransportDefaultConfig(module); err != nil {
+				if err := sonic.FillTransportDefaultConfig(module, current); err != nil {
 					return err
 				}
 			}
@@ -990,7 +1024,7 @@ func NewOpticalModuleCmd() *cobra.Command {
 		},
 		PersistentPostRunE: persistentPostRunE,
 	}
-	opticalModuleCmdImpl.AddCommand(frequencyCmd, berIntervalCmd, prbsCmd, losiCmd, modCmd, stateCmd, descriptionCmd, enableCmd, disableCmd)
+	opticalModuleCmdImpl.AddCommand(frequencyCmd, berIntervalCmd, prbsCmd, losiCmd, modCmd, stateCmd, descriptionCmd, enableCmd, disableCmd, allowOversubscriptionCmd)
 
 	opticalModuleCmd := &cobra.Command{
 		Use:               "optical-module <module-name>",
@@ -998,7 +1032,7 @@ func NewOpticalModuleCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, module := range current.OpticalModule {
 				if verbose {
-					if err := sonic.FillTransportDefaultConfig(module); err != nil {
+					if err := sonic.FillTransportDefaultConfig(module, current); err != nil {
 						return err
 					}
 				}
@@ -1302,7 +1336,26 @@ func NewRootCmd() *cobra.Command {
 	interfaceCmd := NewInterfaceCmd()
 	opticalModuleCmd := NewOpticalModuleCmd()
 
-	rootCmd.AddCommand(initCmd, dumpCmd, portCmd, interfaceCmd, opticalModuleCmd, commitCmd, rollbackCmd, rebootCmd, stopCmd, diffCmd, statusCmd)
+	allowOversubscriptionCmd := &cobra.Command{
+		Use:               "allow-oversubscription",
+		PersistentPreRunE: persistentPreRunE,
+		ValidArgs:         []string{"true", "false"},
+		Args:              cobra.OnlyValidArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("invalid usage")
+			}
+			if args[0] == "true" {
+				current.AllowOversubscription = ygot.Bool(true)
+			} else {
+				current.AllowOversubscription = ygot.Bool(false)
+			}
+			return nil
+		},
+		PersistentPostRunE: persistentPostRunE,
+	}
+
+	rootCmd.AddCommand(initCmd, dumpCmd, portCmd, interfaceCmd, opticalModuleCmd, commitCmd, rollbackCmd, rebootCmd, stopCmd, diffCmd, statusCmd, allowOversubscriptionCmd)
 	flags := rootCmd.PersistentFlags()
 	flags.BoolVarP(&virtual, "virtual", "", false, "virtual env")
 	flags.BoolVarP(&dry, "dry", "d", false, "dry run")
