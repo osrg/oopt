@@ -6,6 +6,7 @@ module packet-transport {
     import openconfig-terminal-device { prefix oc-opt-term; }
     import openconfig-platform-port { prefix oc-port; }
     import openconfig-interfaces { prefix oc-if; }
+    import openconfig-if-ethernet { prefix oc-eth; }
 
     typedef frequency-grid-type {
         type enumeration {
@@ -206,6 +207,12 @@ module packet-transport {
             leaf post-fec-ber {
                 type string;
             }
+
+            leaf occupancy {
+                type string;
+                units percentage;
+            }
+
         }
 
     }
@@ -256,12 +263,15 @@ module packet-transport {
 
                 container config {
                     uses oc-if:interface-phys-config;
+                    uses oc-eth:ethernet-interface-config;
                 }
 
                 container state {
                     uses oc-if:interface-phys-config;
                     uses oc-if:interface-common-state;
                     uses oc-if:interface-counters-state;
+
+                    uses oc-eth:ethernet-interface-config;
                 }
 
                 uses optical-module-connection-top;

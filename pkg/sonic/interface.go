@@ -70,7 +70,7 @@ func HandleInterfaceDiff(newConfig, oldConfig *model.PacketTransponder, name str
 		case "optical-module-connection.id":
 			modOpt = true
 			modEther = true
-		case "mtu", "name":
+		case "mtu", "name", "port-speed":
 		default:
 			fmt.Println("unhandled task:", path)
 		}

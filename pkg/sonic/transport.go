@@ -108,6 +108,78 @@ func HandleOptDiff(name string, task []DiffTask) error {
 	return client.ModEntry(CONFIG_TABLE, name, entry)
 }
 
+func createCh(t *model.PacketTransponder_OpticalModule, n string) *model.PacketTransponder_OpticalModule_ChannelStats {
+	if t.ChannelStats == nil {
+		t.ChannelStats = map[string]*model.PacketTransponder_OpticalModule_ChannelStats{}
+	}
+	if _, ok := t.ChannelStats[n]; !ok {
+		t.ChannelStats[n] = &model.PacketTransponder_OpticalModule_ChannelStats{
+			Name: ygot.String(n),
+		}
+	}
+	return t.ChannelStats[n]
+}
+
+func calculateOccupancy(ch string, t *model.PacketTransponder_OpticalModule, current *model.PacketTransponder) (float32, error) {
+	totalCapacity := 0
+	switch t.ModulationType {
+	case model.PacketTransport_OpticalModulationType_DP_QPSK:
+		if ch == "A" {
+			totalCapacity = 100000
+		}
+	case model.PacketTransport_OpticalModulationType_DP_16QAM:
+		totalCapacity = 100000
+	default:
+		return 0, fmt.Errorf("unknown modulation type: %d", t.ModulationType)
+	}
+	acc := 0
+	for _, v := range current.Interface {
+		c := v.OpticalModuleConnection
+		if c != nil && c.OpticalModule != nil {
+			if c.OpticalModule.Name == nil || *t.Name != *c.OpticalModule.Name {
+				continue
+			}
+			if c.OpticalModule.Channel == nil || ch != *c.OpticalModule.Channel {
+				continue
+			}
+			switch v.PortSpeed {
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_100GB:
+				acc += 100000
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_100MB:
+				acc += 100
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_10GB:
+				acc += 10000
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_10MB:
+				acc += 10
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_1GB:
+				acc += 1000
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_2500MB:
+				acc += 2500
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_25GB:
+				acc += 25000
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_40GB:
+				acc += 40000
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_50GB:
+				acc += 50000
+			case model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_5GB:
+				acc += 5000
+			default:
+				return 0, fmt.Errorf("unknown speed: %d", v.PortSpeed)
+			}
+		}
+	}
+
+	if totalCapacity == 0 {
+		if acc > 0 {
+			return 0, fmt.Errorf("connection assigned to %s.%s which has no capacity. Check modulation format", *t.Name, ch)
+		} else {
+			return 0, nil
+		}
+	}
+
+	return float32(acc) * 100 / float32(totalCapacity), nil
+}
+
 func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule, current *model.PacketTransponder) error {
 	if t.OpticalModuleFrequency == nil {
 		t.OpticalModuleFrequency = &model.PacketTransponder_OpticalModule_OpticalModuleFrequency{}
@@ -140,6 +212,13 @@ func FillTransportDefaultConfig(t *model.PacketTransponder_OpticalModule, curren
 			a = current.AllowOversubscription
 		}
 		t.AllowOversubscription = a
+	}
+	for _, ch := range []string{"A", "B"} {
+		occ, err := calculateOccupancy(ch, t, current)
+		if err != nil {
+			return err
+		}
+		createCh(t, ch).Occupancy = ygot.String(fmt.Sprintf("%f", occ))
 	}
 	return nil
 }
@@ -232,34 +311,22 @@ func FillTransportState(name string, t *model.PacketTransponder_OpticalModule) e
 		}
 	}
 
-	createCh := func(n string) *model.PacketTransponder_OpticalModule_ChannelStats {
-		if t.ChannelStats == nil {
-			t.ChannelStats = map[string]*model.PacketTransponder_OpticalModule_ChannelStats{}
-		}
-		if _, ok := t.ChannelStats[n]; !ok {
-			t.ChannelStats[n] = &model.PacketTransponder_OpticalModule_ChannelStats{
-				Name: ygot.String(n),
-			}
-		}
-		return t.ChannelStats[n]
-	}
-
 	if s, ok := entry["hd-fec-ber"]; ok {
 		e := s.([]string)
-		createCh("A").HdFecBer = ygot.String(e[0])
-		createCh("B").HdFecBer = ygot.String(e[1])
+		createCh(t, "A").HdFecBer = ygot.String(e[0])
+		createCh(t, "B").HdFecBer = ygot.String(e[1])
 	}
 
 	if s, ok := entry["sd-fec-ber"]; ok {
 		e := s.([]string)
-		createCh("A").SdFecBer = ygot.String(e[0])
-		createCh("B").SdFecBer = ygot.String(e[1])
+		createCh(t, "A").SdFecBer = ygot.String(e[0])
+		createCh(t, "B").SdFecBer = ygot.String(e[1])
 	}
 
 	if s, ok := entry["post-fec-ber"]; ok {
 		e := s.([]string)
-		createCh("A").PostFecBer = ygot.String(e[0])
-		createCh("B").PostFecBer = ygot.String(e[1])
+		createCh(t, "A").PostFecBer = ygot.String(e[0])
+		createCh(t, "B").PostFecBer = ygot.String(e[1])
 	}
 
 	return nil

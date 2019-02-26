@@ -154,6 +154,23 @@ func validateFinal(config *model.PacketTransponder) error {
 			return fmt.Errorf("invalid num-channels %d for port %s", *bMode.NumChannels, k)
 		}
 	}
+	for k, v := range config.OpticalModule {
+		if err := sonic.FillTransportDefaultConfig(v, config); err != nil {
+			return err
+		}
+		if *v.AllowOversubscription {
+			continue
+		}
+		for ch, s := range v.ChannelStats {
+			f, err := strconv.ParseFloat(*s.Occupancy, 64)
+			if err != nil {
+				return err
+			}
+			if f > 100.0 {
+				return fmt.Errorf("name: %s, channel: %s over-subscribed: %f%%", k, ch, f)
+			}
+		}
+	}
 	return nil
 }
 
@@ -266,12 +283,13 @@ const (
 	opticalModuleNum = 8
 )
 
-func newInterface(t *model.PacketTransponder, name string) error {
+func newInterface(t *model.PacketTransponder, name string, speed model.E_OpenconfigIfEthernet_ETHERNET_SPEED) error {
 	iface, err := t.NewInterface(name)
 	if err != nil {
 		return err
 	}
 	iface.Mtu = ygot.Uint16(1500)
+	iface.PortSpeed = speed
 	return nil
 }
 
@@ -282,11 +300,12 @@ func defaultConfiguration() (*model.PacketTransponder, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create port: %v", err)
 		}
+		speed := model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_100GB
 		port.BreakoutMode = &model.PacketTransponder_Port_BreakoutMode{
-			ChannelSpeed: model.OpenconfigIfEthernet_ETHERNET_SPEED_SPEED_100GB,
+			ChannelSpeed: speed,
 			NumChannels:  ygot.Uint8(1),
 		}
-		err = newInterface(d, fmt.Sprintf("Ethernet%d", i))
+		err = newInterface(d, fmt.Sprintf("Ethernet%d", i), speed)
 		if err != nil {
 			return nil, err
 		}
@@ -436,6 +455,19 @@ func NewPortCmd() *cobra.Command {
 			}
 
 			current.Port[name].BreakoutMode.ChannelSpeed = speed
+
+			portNum, err := strconv.Atoi(name[len("Port"):])
+			if err != nil {
+				return err
+			}
+
+			ethName := fmt.Sprintf("Ethernet%d", portNum)
+
+			for k, v := range current.Interface {
+				if k == ethName || strings.HasPrefix(k, ethName+"_") {
+					v.PortSpeed = speed
+				}
+			}
 			return nil
 		},
 	}
@@ -469,14 +501,14 @@ func NewPortCmd() *cobra.Command {
 				for i := 1; i <= 4; i++ {
 					delete(current.Interface, fmt.Sprintf("Ethernet%d_%d", portNum, i))
 				}
-				err = newInterface(current, fmt.Sprintf("Ethernet%d", portNum))
+				err = newInterface(current, fmt.Sprintf("Ethernet%d", portNum), current.Port[name].BreakoutMode.ChannelSpeed)
 				if err != nil {
 					return err
 				}
 			case 4:
 				delete(current.Interface, fmt.Sprintf("Ethernet%d", portNum))
 				for i := 1; i <= 4; i++ {
-					err = newInterface(current, fmt.Sprintf("Ethernet%d_%d", portNum, i))
+					err = newInterface(current, fmt.Sprintf("Ethernet%d_%d", portNum, i), current.Port[name].BreakoutMode.ChannelSpeed)
 					if err != nil {
 						return err
 					}
@@ -1122,6 +1154,9 @@ func commit(commitMessage string, reboot bool) error {
 	})
 	if err != nil {
 		return err
+	}
+	if dry {
+		return nil
 	}
 	iter, err := repo.Log(&git.LogOptions{})
 	if err != nil {
